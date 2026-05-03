@@ -227,6 +227,15 @@ export function formatSettlementExecuted(
     `gas=${report.tenderlySim?.gasEstimate ?? "n/a"}`,
     `tx=${explorerUrl ?? txHash ?? "n/a"}`,
     `keeperHub=${keeperExecutionHash ?? "n/a"}`,
+    report.metadata?.rotation
+      ? `rotation=${report.metadata.rotation.executionStatus}`
+      : "",
+    report.metadata?.rotation
+      ? `partialExit=${report.metadata.rotation.partialExitAmount}`
+      : "",
+    report.metadata?.rotation?.quote?.route?.length
+      ? `swapRoute=${report.metadata.rotation.quote.route.join(" -> ")}`
+      : "",
     keeperAuditUrl ? `keeperAudit=${keeperAuditUrl}` : "",
   ]
     .filter(Boolean)

@@ -3,8 +3,9 @@
  * 
  * Tests the full flow:
  * 1. POST /trigger - Create a settlement
- * 2. POST /webhook - Simulate CRE risk report (APPROVED)
- * 3. GET /settlement/:id - Verify execution and get explorer URL
+ * 2. POST /webhook - Simulate anomaly-driven WARNING report
+ * 3. Backend rotates collateral through KeeperHub + updates settlement
+ * 4. GET /settlement/:id - Verify rotation output is visible
  */
 
 import "dotenv/config";
@@ -79,11 +80,11 @@ async function testTriggerEndpoint(): Promise<string | null> {
 }
 
 async function testWebhookEndpoint(settlementId: string): Promise<boolean> {
-  console.log("\n=== Testing POST /webhook endpoint (APPROVED) ===");
+  console.log("\n=== Testing POST /webhook endpoint (WARNING + rotateCollateral) ===");
   
-  // Create a mock APPROVED risk report
+  // Create a mock WARNING risk report that should trigger collateral rotation.
   const mockReport = {
-    status: "APPROVED",
+    status: "WARNING",
     checks: [
       {
         name: "slippage",
@@ -111,11 +112,11 @@ async function testWebhookEndpoint(settlementId: string): Promise<boolean> {
       },
       {
         name: "priceDeviation",
-        passed: true,
-        actual: "0.1%",
-        threshold: "1%",
-        severity: "critical",
-        description: "Price deviation within acceptable range"
+        passed: false,
+        actual: 6.2,
+        threshold: "pass<=5% / rotate 5-10% / exit>10%",
+        severity: "warning",
+        description: "Balanced profile rotate band triggered"
       }
     ],
     oracleData: {
@@ -134,7 +135,10 @@ async function testWebhookEndpoint(settlementId: string): Promise<boolean> {
     intent: testIntent,
     metadata: {
       executionId: `exec-${Date.now()}`,
-      notes: ["E2E test simulation"]
+      notes: ["E2E warning rotation simulation"],
+      agentProfile: "balanced",
+      profileAction: "PARTIAL_ROTATE_HOLD",
+      priceDeviationPercent: 6.2
     }
   };
   
@@ -145,7 +149,7 @@ async function testWebhookEndpoint(settlementId: string): Promise<boolean> {
   };
   
   try {
-    console.log("Sending webhook with APPROVED status...");
+    console.log("Sending webhook with WARNING status (rotation path)...");
     
     const response = await fetch(`${BACKEND_URL}/webhook`, {
       method: "POST",
@@ -232,13 +236,16 @@ async function runE2ETest(): Promise<void> {
   // 3. Check initial settlement status
   await testGetSettlement(settlementId);
   
-  // 4. Simulate CRE webhook with APPROVED status
+  console.log("\nFlow target:");
+  console.log("profile set -> anomaly triggered -> WARNING fired -> rotation executed -> Risk Explorer updated -> Telegram alerted");
+
+  // 4. Simulate CRE webhook with WARNING status and balanced rotate action
   const webhookSuccess = await testWebhookEndpoint(settlementId);
   if (!webhookSuccess) {
     console.error("\nWebhook processing failed");
   }
   
-  // 5. Wait a moment for execution to complete
+  // 5. Wait a moment for rotation execution to complete
   console.log("\nWaiting for execution to complete...");
   await sleep(3000);
   

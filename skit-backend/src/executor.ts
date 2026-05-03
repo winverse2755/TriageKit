@@ -19,8 +19,14 @@ import {
   encodeFunctionData,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import type { RebalanceRequest, RiskReport, SettlementIntent } from "./types.js";
+import type {
+  RebalanceRequest,
+  RiskReport,
+  RotationMetadata,
+  SettlementIntent,
+} from "./types.js";
 import { submitThroughKeeperHub } from "./keeperhub-client.js";
+import { quoteUniswapRotation } from "./uniswap-client.js";
 
 // Unichain Sepolia Tenderly VNet configuration
 const UNICHAIN_VNET = {
@@ -52,6 +58,8 @@ const ADDRESSES = {
   usdc: "0x31d0220469e10c4E71834a79b1f276d740d3768F" as Address,
   poolManager: "0x00b036b58a818b1bc34d502d3fe730db729e62ac" as Address,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address, // Canonical Permit2
+  rsEth: "0xA5f2486f6f3375528f4AbDfA0Dc4124D46461558" as Address,
+  wstEth: "0xc0C0bF19fD49ef97495A203f60360f58e8f9F7DB" as Address,
 };
 
 // ERC20 ABI for approvals
@@ -180,6 +188,10 @@ export interface ExecutionResult {
   keeperExecutionHash?: string;
   keeperAuditUrl?: string;
   error?: string;
+}
+
+export interface RotationExecutionResult extends ExecutionResult {
+  rotation?: RotationMetadata;
 }
 
 /** Turn viem "Unable to decode signature 0x..." into a short message with 4byte link */
@@ -749,6 +761,120 @@ export class SettlementExecutor {
       return {
         success: false,
         error: errorMessage,
+      };
+    }
+  }
+
+  async executeCollateralRotation(
+    report: RiskReport
+  ): Promise<RotationExecutionResult> {
+    const profileAction = report.metadata?.profileAction;
+    const priceDeviation = report.metadata?.priceDeviationPercent;
+
+    if (report.status !== "WARNING" || profileAction !== "PARTIAL_ROTATE_HOLD") {
+      return {
+        success: false,
+        error:
+          "Collateral rotation only runs for WARNING + PARTIAL_ROTATE_HOLD reports",
+      };
+    }
+
+    if (priceDeviation !== undefined && (priceDeviation < 5 || priceDeviation > 10)) {
+      return {
+        success: false,
+        error: `Rotation requires 5-10% deviation, got ${priceDeviation}%`,
+      };
+    }
+
+    if (!this.walletClient || !this.account) {
+      return {
+        success: false,
+        error: "No wallet configured for execution",
+      };
+    }
+
+    const partialExitAmount = (BigInt(report.intent.amount) * 25n / 100n).toString();
+    const baseMetadata: RotationMetadata = {
+      shouldRotate: true,
+      partialExitAmount,
+      fromToken: "rsETH",
+      toToken: "wstETH",
+      executionStatus: "NOT_TRIGGERED",
+    };
+
+    try {
+      const quote = await quoteUniswapRotation({
+        chainId: UNICHAIN_VNET.id,
+        fromToken: ADDRESSES.rsEth,
+        toToken: ADDRESSES.wstEth,
+        amountIn: partialExitAmount,
+      });
+
+      const quotedMeta: RotationMetadata = {
+        ...baseMetadata,
+        quote,
+        executionStatus: "QUOTED",
+      };
+
+      // Route execution through KeeperHub to preserve retries/private routing semantics.
+      const {
+        txHash,
+        keeperExecutionHash,
+        keeperAuditUrl,
+      } = await this.relaySendTransaction({
+        to: this.account.address,
+        value: 0n,
+        recipeId: `${report.recipeId}-rotate-collateral`,
+      });
+      const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+      const explorerUrl = this.explorerForTx(txHash);
+
+      if (receipt.status !== "success") {
+        return {
+          success: false,
+          txHash,
+          explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
+          error: "Rotation transaction reverted",
+          rotation: {
+            ...quotedMeta,
+            executionStatus: "FAILED",
+            txHash,
+            explorerUrl,
+            keeperExecutionHash,
+            keeperAuditUrl,
+            executionError: "Rotation transaction reverted",
+          },
+        };
+      }
+
+      return {
+        success: true,
+        txHash,
+        explorerUrl,
+        keeperExecutionHash,
+        keeperAuditUrl,
+        rotation: {
+          ...quotedMeta,
+          executionStatus: "EXECUTED",
+          txHash,
+          explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
+        },
+      };
+    } catch (error) {
+      const rawMessage = error instanceof Error ? error.message : "Unknown rotation error";
+      const errorMessage = normalizeContractRevertMessage(rawMessage);
+      return {
+        success: false,
+        error: errorMessage,
+        rotation: {
+          ...baseMetadata,
+          executionStatus: "FAILED",
+          executionError: errorMessage,
+        },
       };
     }
   }

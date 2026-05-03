@@ -21,6 +21,16 @@ export interface RecipeIntent {
 interface RecipeBreakdownProps {
   intent: RecipeIntent;
   selectedPoolId?: string;
+  rotation?: {
+    partialExitAmount: string;
+    fromToken: string;
+    toToken: string;
+    quote?: {
+      route?: string[];
+      amountOut?: string;
+    };
+    executionStatus: string;
+  };
 }
 
 function CopyButton({ text, className }: { text: string; className?: string }) {
@@ -74,7 +84,7 @@ function Field({
   );
 }
 
-export function RecipeBreakdown({ intent, selectedPoolId }: RecipeBreakdownProps) {
+export function RecipeBreakdown({ intent, selectedPoolId, rotation }: RecipeBreakdownProps) {
   return (
     <Card
       className="rounded-xl border border-border/60 bg-card/50 backdrop-blur-[8px] overflow-hidden"
@@ -121,7 +131,30 @@ export function RecipeBreakdown({ intent, selectedPoolId }: RecipeBreakdownProps
             value={`${(intent.maxSlippageTolerance * 100).toFixed(2)}%`}
           />
           <Field label="Max Bridge Delay" value={`${intent.maxBridgeDelay}ms`} mono />
+          {rotation ? (
+            <>
+              <Field label="rotateCollateral" value="enabled" />
+              <Field
+                label="Partial Exit Amount"
+                value={formatAmount(rotation.partialExitAmount)}
+                mono
+              />
+              <Field
+                label="Rotation Pair"
+                value={`${rotation.fromToken} -> ${rotation.toToken}`}
+              />
+              <Field
+                label="Rotation Status"
+                value={rotation.executionStatus}
+              />
+            </>
+          ) : null}
         </div>
+        {rotation?.quote?.route?.length ? (
+          <div className="mt-4 text-sm text-muted-foreground">
+            Swap route: <span className="font-mono">{rotation.quote.route.join(" -> ")}</span>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

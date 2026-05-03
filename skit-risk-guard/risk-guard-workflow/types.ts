@@ -14,6 +14,37 @@ export type ProfileAction =
   | "PARTIAL_ROTATE_HOLD"
   | "HOLD_LOG_INTENT";
 
+export type RotationExecutionStatus =
+  | "NOT_TRIGGERED"
+  | "QUOTED"
+  | "EXECUTED"
+  | "FAILED";
+
+export interface RotationQuote {
+  provider: "uniswap";
+  chainId: number;
+  fromToken: string;
+  toToken: string;
+  amountIn: string;
+  amountOut: string;
+  route: string[];
+  raw?: Record<string, unknown>;
+}
+
+export interface RotationMetadata {
+  shouldRotate: boolean;
+  partialExitAmount: string;
+  fromToken: string;
+  toToken: string;
+  quote?: RotationQuote;
+  executionStatus: RotationExecutionStatus;
+  executionError?: string;
+  txHash?: string;
+  explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
+}
+
 /**
  * Settlement intent payload received via HTTP trigger.
  * Contains all parameters needed to assess risk for a cross-chain settlement.
@@ -352,6 +383,8 @@ export interface RiskReport {
     stabilizationIntentLogged?: boolean;
     /** Observed oracle/DEX deviation % at evaluation (mainnet pools only) */
     priceDeviationPercent?: number;
+    /** Rotation details for PARTIAL_ROTATE_HOLD profile action */
+    rotation?: RotationMetadata;
   };
 }
 

@@ -551,7 +551,64 @@ app.post("/webhook", async (req: Request, res: Response) => {
         ].join("\n");
         await telegramBot.sendBroadcast(targets, text);
       }
-      pendingSimulations.delete(settlement.id);
+    }
+
+    if (
+      report.status === "WARNING" &&
+      report.metadata?.agentProfile === "balanced" &&
+      report.metadata?.profileAction === "PARTIAL_ROTATE_HOLD"
+    ) {
+      const priceDeviation = report.metadata?.priceDeviationPercent;
+      if (priceDeviation === undefined || (priceDeviation >= 5 && priceDeviation <= 10)) {
+        console.log(
+          "[/webhook] WARNING + balanced PARTIAL_ROTATE_HOLD - triggering collateral rotation"
+        );
+        const executor = getExecutor();
+        const rotationResult = await executor.executeCollateralRotation(report);
+        const rotatedReport: RiskReport = {
+          ...report,
+          metadata: {
+            ...report.metadata,
+            rotation: rotationResult.rotation,
+          },
+        };
+        updatedSettlement = updateSettlementStatus(
+          settlement.id,
+          rotationResult.success ? "EXECUTED" : "FAILED",
+          rotatedReport,
+          rotationResult.txHash,
+          rotationResult.explorerUrl,
+          rotationResult.keeperExecutionHash,
+          rotationResult.keeperAuditUrl
+        );
+        if (telegramBot) {
+          const alertChatIds = getEnabledTelegramChatIds();
+          const simChatId = pendingSimulations.get(settlement.id);
+          const targets = simChatId
+            ? [...new Set([...alertChatIds, simChatId])]
+            : alertChatIds;
+          if (targets.length > 0) {
+            if (rotationResult.success) {
+              await telegramBot.sendBroadcast(
+                targets,
+                formatSettlementExecuted(
+                  rotatedReport,
+                  rotationResult.txHash,
+                  rotationResult.explorerUrl,
+                  rotationResult.keeperExecutionHash,
+                  rotationResult.keeperAuditUrl
+                )
+              );
+            } else {
+              await telegramBot.sendBroadcast(
+                targets,
+                formatSettlementFailed(rotatedReport, rotationResult.error)
+              );
+            }
+          }
+        }
+        pendingSimulations.delete(settlement.id);
+      }
     }
 
     // If approved, execute the settlement and broadcast the outcome.
@@ -626,6 +683,10 @@ app.post("/webhook", async (req: Request, res: Response) => {
           }
         }
       }
+      pendingSimulations.delete(settlement.id);
+    }
+
+    if (report.status === "BLOCKED") {
       pendingSimulations.delete(settlement.id);
     }
     

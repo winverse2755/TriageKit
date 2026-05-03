@@ -18,6 +18,17 @@ interface ExecutionResultProps {
   errorMessage?: string;
   keeperExecutionHash?: string;
   keeperAuditUrl?: string;
+  rotation?: {
+    partialExitAmount: string;
+    fromToken: string;
+    toToken: string;
+    executionStatus: string;
+    executionError?: string;
+    quote?: {
+      amountOut: string;
+      route: string[];
+    };
+  };
 }
 
 export function ExecutionResult({
@@ -26,9 +37,11 @@ export function ExecutionResult({
   errorMessage,
   keeperExecutionHash,
   keeperAuditUrl,
+  rotation,
 }: ExecutionResultProps) {
   const [copied, setCopied] = useState(false);
   const [copiedKeeper, setCopiedKeeper] = useState(false);
+  const hasTxHash = txHash.startsWith('0x');
 
   const copyHash = () => {
     navigator.clipboard.writeText(txHash);
@@ -88,34 +101,38 @@ export function ExecutionResult({
             >
               {truncateHash(txHash)}
             </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={copyHash}
-              title={copied ? 'Copied!' : 'Copy hash'}
-            >
-              <Copy className="h-4 w-4" />
-            </Button>
+            {hasTxHash ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={copyHash}
+                title={copied ? 'Copied!' : 'Copy hash'}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            ) : null}
           </div>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            className="border-primary text-primary hover:bg-primary/10"
-            asChild
-          >
-            <a
-              href={getTenderlyTxUrl(txHash)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-2"
+          {hasTxHash ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-primary text-primary hover:bg-primary/10"
+              asChild
             >
-              <ExternalLink className="h-4 w-4" />
-              View on Tenderly
-            </a>
-          </Button>
+              <a
+                href={getTenderlyTxUrl(txHash)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                View on Tenderly
+              </a>
+            </Button>
+          ) : null}
           {keeperAuditUrl ? (
             <Button
               variant="outline"
@@ -157,6 +174,27 @@ export function ExecutionResult({
                 <Copy className="h-4 w-4" />
               </Button>
             </div>
+          </div>
+        ) : null}
+        {rotation ? (
+          <div className="rounded-lg border border-border/50 px-3 py-3">
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+              Collateral Rotation
+            </div>
+            <p className="font-mono text-sm">
+              {rotation.fromToken} -&gt; {rotation.toToken} | partialExit={rotation.partialExitAmount}
+            </p>
+            <p className="font-mono text-xs text-muted-foreground mt-1">
+              status={rotation.executionStatus}
+              {rotation.quote?.route?.length
+                ? ` | route=${rotation.quote.route.join(" -> ")}`
+                : ""}
+            </p>
+            {rotation.executionError ? (
+              <p className="font-mono text-xs text-destructive mt-1">
+                error={rotation.executionError}
+              </p>
+            ) : null}
           </div>
         ) : null}
       </CardContent>

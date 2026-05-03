@@ -10,6 +10,37 @@ export type ProfileAction =
   | "PARTIAL_ROTATE_HOLD"
   | "HOLD_LOG_INTENT";
 
+export type RotationExecutionStatus =
+  | "NOT_TRIGGERED"
+  | "QUOTED"
+  | "EXECUTED"
+  | "FAILED";
+
+export interface RotationQuote {
+  provider: "uniswap";
+  chainId: number;
+  fromToken: string;
+  toToken: string;
+  amountIn: string;
+  amountOut: string;
+  route: string[];
+  raw?: Record<string, unknown>;
+}
+
+export interface RotationMetadata {
+  shouldRotate: boolean;
+  partialExitAmount: string;
+  fromToken: string;
+  toToken: string;
+  quote?: RotationQuote;
+  executionStatus: RotationExecutionStatus;
+  executionError?: string;
+  txHash?: string;
+  explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
+}
+
 export interface SettlementIntent {
   sourceChain: string;
   targetChain: string;
@@ -86,6 +117,7 @@ export interface RiskReport {
     profileAction?: ProfileAction;
     stabilizationIntentLogged?: boolean;
     priceDeviationPercent?: number;
+    rotation?: RotationMetadata;
   };
 }
 
