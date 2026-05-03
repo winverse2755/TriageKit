@@ -16,19 +16,31 @@ interface ExecutionResultProps {
   txHash: string;
   success?: boolean;
   errorMessage?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
 }
 
 export function ExecutionResult({
   txHash,
   success = true,
   errorMessage,
+  keeperExecutionHash,
+  keeperAuditUrl,
 }: ExecutionResultProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedKeeper, setCopiedKeeper] = useState(false);
 
   const copyHash = () => {
     navigator.clipboard.writeText(txHash);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const copyKeeperHash = () => {
+    if (!keeperExecutionHash) return;
+    navigator.clipboard.writeText(keeperExecutionHash);
+    setCopiedKeeper(true);
+    setTimeout(() => setCopiedKeeper(false), 1500);
   };
 
   return (
@@ -87,22 +99,66 @@ export function ExecutionResult({
             </Button>
           </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="border-primary text-primary hover:bg-primary/10"
-          asChild
-        >
-          <a
-            href={getTenderlyTxUrl(txHash)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2"
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="border-primary text-primary hover:bg-primary/10"
+            asChild
           >
-            <ExternalLink className="h-4 w-4" />
-            View on Tenderly
-          </a>
-        </Button>
+            <a
+              href={getTenderlyTxUrl(txHash)}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2"
+            >
+              <ExternalLink className="h-4 w-4" />
+              View on Tenderly
+            </a>
+          </Button>
+          {keeperAuditUrl ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-muted-foreground/40"
+              asChild
+            >
+              <a
+                href={keeperAuditUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                KeeperHub audit
+              </a>
+            </Button>
+          ) : null}
+        </div>
+        {keeperExecutionHash ? (
+          <div>
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+              KeeperHub execution hash
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="font-mono text-sm text-foreground"
+                title={keeperExecutionHash}
+              >
+                {truncateHash(keeperExecutionHash, 12, 10)}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={copyKeeperHash}
+                title={copiedKeeper ? 'Copied!' : 'Copy KeeperHub hash'}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

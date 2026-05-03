@@ -28,6 +28,7 @@ export interface SettlementIntent {
   maxBridgeDelay: number;
   sourceRpc: string;
   targetRpc: string;
+  agentProfile?: 'conservative' | 'balanced' | 'backstop';
 }
 
 export interface RiskCheck {
@@ -63,6 +64,14 @@ export interface RiskReport {
   timestamp: number;
   intent: SettlementIntent;
   selectedPoolId?: string;
+  metadata?: {
+    executionId?: string;
+    notes?: string[];
+    agentProfile?: string;
+    profileAction?: string;
+    stabilizationIntentLogged?: boolean;
+    priceDeviationPercent?: number;
+  };
 }
 
 export interface Settlement {
@@ -70,9 +79,16 @@ export interface Settlement {
   intent: SettlementIntent;
   status: string;
   riskReport?: RiskReport;
-  execution?: { txHash: string; explorerUrl: string };
+  execution?: {
+    txHash: string;
+    explorerUrl: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
+  };
   txHash?: string;
   explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -208,6 +224,13 @@ export function SettlementDetail({ settlement }: SettlementDetailProps) {
             <ExecutionResult
               txHash={txHash!}
               success={settlement.status !== 'FAILED'}
+              keeperExecutionHash={
+                settlement.execution?.keeperExecutionHash ??
+                settlement.keeperExecutionHash
+              }
+              keeperAuditUrl={
+                settlement.execution?.keeperAuditUrl ?? settlement.keeperAuditUrl
+              }
             />
           </motion.div>
         )}

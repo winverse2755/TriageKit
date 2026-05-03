@@ -18,6 +18,7 @@ import type {
   RebalanceStatus,
   TelegramAlertSetting,
   PositionWithMonitoring,
+  AgentProfile,
 } from "./types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -85,10 +86,32 @@ export function initDatabase(): Database.Database {
       enabled INTEGER NOT NULL DEFAULT 1,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS telegram_profiles (
+      chat_id TEXT PRIMARY KEY,
+      profile TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
 
+  migrateSettlementsColumns(db);
   console.log("[DB] Database initialized at", DB_PATH);
   return db;
+}
+
+function migrateSettlementsColumns(database: Database.Database): void {
+  const cols = database
+    .prepare(`PRAGMA table_info(settlements)`)
+    .all() as Array<{ name: string }>;
+  const names = new Set(cols.map((c) => c.name));
+  if (!names.has("keeper_execution_hash")) {
+    database.exec(
+      `ALTER TABLE settlements ADD COLUMN keeper_execution_hash TEXT`
+    );
+  }
+  if (!names.has("keeper_audit_url")) {
+    database.exec(`ALTER TABLE settlements ADD COLUMN keeper_audit_url TEXT`);
+  }
 }
 
 export function getDatabase(): Database.Database {
@@ -186,7 +209,9 @@ export function updateSettlementStatus(
   status: SettlementStatus,
   riskReport?: RiskReport,
   txHash?: string,
-  explorerUrl?: string
+  explorerUrl?: string,
+  keeperExecutionHash?: string,
+  keeperAuditUrl?: string
 ): Settlement | null {
   const db = getDatabase();
   const now = Date.now();
@@ -197,6 +222,8 @@ export function updateSettlementStatus(
         risk_report = COALESCE(?, risk_report),
         tx_hash = COALESCE(?, tx_hash),
         explorer_url = COALESCE(?, explorer_url),
+        keeper_execution_hash = COALESCE(?, keeper_execution_hash),
+        keeper_audit_url = COALESCE(?, keeper_audit_url),
         updated_at = ?
     WHERE id = ?
   `);
@@ -206,6 +233,8 @@ export function updateSettlementStatus(
     riskReport ? JSON.stringify(riskReport) : null,
     txHash ?? null,
     explorerUrl ?? null,
+    keeperExecutionHash ?? null,
+    keeperAuditUrl ?? null,
     now,
     id
   );
@@ -573,6 +602,50 @@ export function getEnabledTelegramChatIds(): string[] {
   return rows.map((r) => r.chat_id);
 }
 
+const VALID_PROFILES: AgentProfile[] = [
+  "conservative",
+  "balanced",
+  "backstop",
+];
+
+export function setTelegramProfile(
+  chatId: string,
+  profile: AgentProfile
+): { chatId: string; profile: AgentProfile; updatedAt: number } {
+  const db = getDatabase();
+  const now = Date.now();
+  const stmt = db.prepare(`
+    INSERT INTO telegram_profiles (chat_id, profile, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      profile = excluded.profile,
+      updated_at = excluded.updated_at
+  `);
+  stmt.run(chatId, profile, now);
+  return { chatId, profile, updatedAt: now };
+}
+
+export function getTelegramProfileRecord(
+  chatId: string
+): { chatId: string; profile: AgentProfile; updatedAt: number } | null {
+  const db = getDatabase();
+  const row = db
+    .prepare(
+      `SELECT chat_id, profile, updated_at FROM telegram_profiles WHERE chat_id = ?`
+    )
+    .get(chatId) as
+    | { chat_id: string; profile: string; updated_at: number }
+    | undefined;
+  if (!row) return null;
+  const p = row.profile as AgentProfile;
+  if (!VALID_PROFILES.includes(p)) return null;
+  return { chatId: row.chat_id, profile: p, updatedAt: row.updated_at };
+}
+
+export function getEffectiveTelegramProfile(chatId: string): AgentProfile {
+  return getTelegramProfileRecord(chatId)?.profile ?? "balanced";
+}
+
 function rowToSettlement(row: SettlementRow): Settlement {
   return {
     id: row.id,
@@ -581,6 +654,8 @@ function rowToSettlement(row: SettlementRow): Settlement {
     riskReport: row.risk_report ? JSON.parse(row.risk_report) as RiskReport : undefined,
     txHash: row.tx_hash ?? undefined,
     explorerUrl: row.explorer_url ?? undefined,
+    keeperExecutionHash: row.keeper_execution_hash ?? undefined,
+    keeperAuditUrl: row.keeper_audit_url ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

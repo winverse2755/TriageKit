@@ -3,6 +3,13 @@
  * Mirrors types from skit-risk-guard/risk-guard-workflow/types.ts
  */
 
+export type AgentProfile = "conservative" | "balanced" | "backstop";
+
+export type ProfileAction =
+  | "FULL_EXIT"
+  | "PARTIAL_ROTATE_HOLD"
+  | "HOLD_LOG_INTENT";
+
 export interface SettlementIntent {
   sourceChain: string;
   targetChain: string;
@@ -12,6 +19,7 @@ export interface SettlementIntent {
   maxBridgeDelay: number;
   sourceRpc: string;
   targetRpc: string;
+  agentProfile?: AgentProfile;
 }
 
 export type CheckSeverity = "info" | "warning" | "critical";
@@ -74,6 +82,10 @@ export interface RiskReport {
   metadata?: {
     executionId?: string;
     notes?: string[];
+    agentProfile?: AgentProfile;
+    profileAction?: ProfileAction;
+    stabilizationIntentLogged?: boolean;
+    priceDeviationPercent?: number;
   };
 }
 
@@ -118,6 +130,8 @@ export interface Settlement {
   riskReport?: RiskReport;
   txHash?: string;
   explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -199,6 +213,8 @@ export interface SettlementRow {
   risk_report: string | null;
   tx_hash: string | null;
   explorer_url: string | null;
+  keeper_execution_hash?: string | null;
+  keeper_audit_url?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -222,6 +238,8 @@ export interface SettlementResponse {
   execution?: {
     txHash: string;
     explorerUrl: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
   };
   createdAt: number;
   updatedAt: number;

@@ -22,6 +22,7 @@ export interface TelegramCommandHandlers {
   onSimulate: (chatId: string, args: string[]) => Promise<string>;
   onStatus: (args: string[]) => Promise<string>;
   onAlerts: (chatId: string, args: string[]) => Promise<string>;
+  onProfile: (chatId: string, args: string[]) => Promise<string>;
   onApprove: (args: string[]) => Promise<string>;
   onHistory: () => Promise<string>;
   onForkStatus: () => Promise<string>;
@@ -146,6 +147,9 @@ export class TelegramBotService {
         case "/alerts":
           await this.sendMessage(chatIdStr, await this.handlers.onAlerts(chatIdStr, args));
           break;
+        case "/profile":
+          await this.sendMessage(chatIdStr, await this.handlers.onProfile(chatIdStr, args));
+          break;
         case "/approve":
           await this.sendMessage(chatIdStr, await this.handlers.onApprove(args));
           break;
@@ -168,7 +172,7 @@ export class TelegramBotService {
         default:
           await this.sendMessage(
             chatIdStr,
-            "Unknown command. Try: send 5 USDC from baseSepolia to unichainSepolia — or /simulate /status /alerts /approve /history /fork status /positions /rebalance"
+            "Unknown command. Try: send 5 USDC from baseSepolia to unichainSepolia — or /simulate /status /alerts /profile /approve /history /fork status /positions /rebalance"
           );
       }
     } catch (error) {
@@ -184,7 +188,8 @@ export function formatHistory(settlements: Settlement[]): string {
       s.status === "EXECUTED" ? "✅" : s.status === "FAILED" ? "❌" : "⏳";
     const riskLink = s.riskReport?.explorerUrl ?? "n/a";
     const txLink = s.explorerUrl ?? "n/a";
-    return `${i + 1}. ${statusIcon} ${s.id}\nstatus=${s.status}\nrisk=${riskLink}\nsettlementTx=${txLink}`;
+    const kh = s.keeperExecutionHash ?? "n/a";
+    return `${i + 1}. ${statusIcon} ${s.id}\nstatus=${s.status}\nrisk=${riskLink}\nsettlementTx=${txLink}\nkeeperHub=${kh}`;
   });
   return `Last settlements:\n\n${lines.join("\n\n")}`;
 }
@@ -206,7 +211,9 @@ export function formatPositions(positions: PositionWithMonitoring[]): string {
 export function formatSettlementExecuted(
   report: RiskReport,
   txHash?: string,
-  explorerUrl?: string
+  explorerUrl?: string,
+  keeperExecutionHash?: string,
+  keeperAuditUrl?: string
 ): string {
   const slippageCheck = report.checks.find((c) => c.name === "slippage");
   const liquidityCheck = report.checks.find((c) => c.name === "liquidity");
@@ -219,7 +226,11 @@ export function formatSettlementExecuted(
     `bridgeETA(ms)=${bridgeCheck?.actual ?? "n/a"}`,
     `gas=${report.tenderlySim?.gasEstimate ?? "n/a"}`,
     `tx=${explorerUrl ?? txHash ?? "n/a"}`,
-  ].join("\n");
+    `keeperHub=${keeperExecutionHash ?? "n/a"}`,
+    keeperAuditUrl ? `keeperAudit=${keeperAuditUrl}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export function formatSettlementFailed(

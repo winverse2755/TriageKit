@@ -2,6 +2,19 @@
 // Type definitions for the CRE Risk Guard Workflow
 
 /**
+ * Agent risk profile: pre-commitment behavior under stress (TriageKit / Risk Guard).
+ */
+export type AgentProfile = "conservative" | "balanced" | "backstop";
+
+/**
+ * Recommended response action derived from profile + observed deviation.
+ */
+export type ProfileAction =
+  | "FULL_EXIT"
+  | "PARTIAL_ROTATE_HOLD"
+  | "HOLD_LOG_INTENT";
+
+/**
  * Settlement intent payload received via HTTP trigger.
  * Contains all parameters needed to assess risk for a cross-chain settlement.
  */
@@ -22,6 +35,8 @@ export interface SettlementIntent {
   sourceRpc: string;
   /** Tenderly fork RPC endpoint for target chain */
   targetRpc: string;
+  /** Optional agent risk profile (defaults to balanced if omitted) */
+  agentProfile?: AgentProfile;
 }
 
 /**
@@ -329,6 +344,14 @@ export interface RiskReport {
     executionId?: string;
     /** Any warnings or notes */
     notes?: string[];
+    /** Effective agent profile used for this evaluation */
+    agentProfile?: AgentProfile;
+    /** Derived action when deviation triggers a profile-specific response */
+    profileAction?: ProfileAction;
+    /** Backstop: stabilization intent recorded for audit */
+    stabilizationIntentLogged?: boolean;
+    /** Observed oracle/DEX deviation % at evaluation (mainnet pools only) */
+    priceDeviationPercent?: number;
   };
 }
 

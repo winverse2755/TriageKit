@@ -31,6 +31,9 @@ import {
   updatePositionPool,
   getEnabledTelegramChatIds,
   setTelegramAlerts,
+  getEffectiveTelegramProfile,
+  getTelegramProfileRecord,
+  setTelegramProfile,
   closeDatabase,
 } from "./db.js";
 import { getExecutor } from "./executor.js";
@@ -55,6 +58,7 @@ import type {
   WebhookResponse,
   SettlementResponse,
   RiskReport,
+  AgentProfile,
 } from "./types.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -80,6 +84,12 @@ const BASE_VNET_RPC =
 const UNICHAIN_VNET_RPC =
   process.env.UNICHAIN_VNET_RPC ??
   "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668";
+
+const VALID_AGENT_PROFILES: AgentProfile[] = [
+  "conservative",
+  "balanced",
+  "backstop",
+];
 
 const app = express();
 app.use(express.json());
@@ -115,6 +125,7 @@ if (TELEGRAM_BOT_TOKEN) {
         return "Usage: /simulate <amount> <from_chain> <to_chain>";
       }
       const [amount, fromChain, toChain] = args;
+      const agentProfile = getEffectiveTelegramProfile(chatId);
       const intent: SettlementIntent = {
         sourceChain: fromChain,
         targetChain: toChain,
@@ -124,6 +135,7 @@ if (TELEGRAM_BOT_TOKEN) {
         maxBridgeDelay: 1_200_000,
         sourceRpc: BASE_VNET_RPC,
         targetRpc: UNICHAIN_VNET_RPC,
+        agentProfile,
       };
 
       const settlementId = getNextSettlementId();
@@ -163,6 +175,7 @@ if (TELEGRAM_BOT_TOKEN) {
       return [
         "Simulation submitted ✅",
         `settlementId=${settlementId}`,
+        `agentProfile=${agentProfile}`,
         `status=PENDING`,
         "",
         "CRE is running the risk assessment. You will receive a follow-up message here once the result arrives.",
@@ -193,6 +206,25 @@ if (TELEGRAM_BOT_TOKEN) {
       setTelegramAlerts(chatId, mode === "on");
       return `Alerts ${mode === "on" ? "enabled" : "disabled"}.`;
     },
+    onProfile: async (chatId, args) => {
+      if (args.length === 0) {
+        const p = getEffectiveTelegramProfile(chatId);
+        const rec = getTelegramProfileRecord(chatId);
+        return [
+          `Current agent profile: ${p}`,
+          rec
+            ? `(saved for this chat)`
+            : `(default — use /profile conservative|balanced|backstop to save)`,
+        ].join("\n");
+      }
+      const raw = args[0]?.toLowerCase();
+      if (!VALID_AGENT_PROFILES.includes(raw as AgentProfile)) {
+        return "Usage: /profile [conservative|balanced|backstop]";
+      }
+      const profile = raw as AgentProfile;
+      setTelegramProfile(chatId, profile);
+      return `Agent profile set to ${profile}. Future /simulate intents will use this pre-commitment.`;
+    },
     onApprove: async (args) => {
       if (args.length < 1) return "Usage: /approve <recipeId>";
       const settlement = getSettlementByRecipeId(args[0]);
@@ -215,9 +247,11 @@ if (TELEGRAM_BOT_TOKEN) {
           "EXECUTED",
           undefined,
           result.txHash,
-          result.explorerUrl
+          result.explorerUrl,
+          result.keeperExecutionHash,
+          result.keeperAuditUrl
         );
-        return `Approved and executed ✅\nsettlementId=${settlement.id}\ntx=${result.explorerUrl ?? result.txHash}`;
+        return `Approved and executed ✅\nsettlementId=${settlement.id}\ntx=${result.explorerUrl ?? result.txHash}\nkeeperHub=${result.keeperExecutionHash ?? "n/a"}`;
       }
       updateSettlementStatus(settlement.id, "FAILED");
       return `Approval execution failed ❌\nreason=${result.error ?? "unknown"}`;
@@ -253,7 +287,7 @@ if (TELEGRAM_BOT_TOKEN) {
       });
       if (result.success) {
         updatePositionPool(positionId, latestReport.nextBestPool);
-        return `Manual rebalance executed ✅\nposition=${positionId}\ntx=${result.explorerUrl ?? result.txHash}`;
+        return `Manual rebalance executed ✅\nposition=${positionId}\ntx=${result.explorerUrl ?? result.txHash}\nkeeperHub=${result.keeperExecutionHash ?? "n/a"}`;
       }
       return `Manual rebalance failed ❌\nposition=${positionId}\nreason=${result.error ?? "unknown"}`;
     },
@@ -534,7 +568,9 @@ app.post("/webhook", async (req: Request, res: Response) => {
           "EXECUTED",
           undefined,
           result.txHash,
-          result.explorerUrl
+          result.explorerUrl,
+          result.keeperExecutionHash,
+          result.keeperAuditUrl
         );
         try {
           addToPositionOrCreate({
@@ -555,7 +591,13 @@ app.post("/webhook", async (req: Request, res: Response) => {
           if (targets.length > 0) {
             await telegramBot.sendBroadcast(
               targets,
-              formatSettlementExecuted(report, result.txHash, result.explorerUrl)
+              formatSettlementExecuted(
+                report,
+                result.txHash,
+                result.explorerUrl,
+                result.keeperExecutionHash,
+                result.keeperAuditUrl
+              )
             );
           }
         }
@@ -564,6 +606,8 @@ app.post("/webhook", async (req: Request, res: Response) => {
         updatedSettlement = updateSettlementStatus(
           settlement.id,
           "FAILED",
+          undefined,
+          undefined,
           undefined,
           undefined,
           undefined
@@ -626,6 +670,8 @@ app.get("/settlement/:id", (req: Request, res: Response) => {
         ? {
             txHash: settlement.txHash,
             explorerUrl: settlement.explorerUrl || "",
+            keeperExecutionHash: settlement.keeperExecutionHash,
+            keeperAuditUrl: settlement.keeperAuditUrl,
           }
         : undefined,
       createdAt: settlement.createdAt,

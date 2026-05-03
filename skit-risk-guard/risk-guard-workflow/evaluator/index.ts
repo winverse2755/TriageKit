@@ -6,10 +6,13 @@ export {
   determineStatus,
   buildReport,
   getSummary,
+  effectiveAgentProfile,
+  deriveProfileMetadata,
 } from "./risk-evaluator";
 
 export {
   DEFAULT_THRESHOLDS,
+  PROFILE_DEVIATION_BANDS,
   LIQUIDITY_DEPTH_ORDER,
   meetsLiquidityRequirement,
   determineSeverity,

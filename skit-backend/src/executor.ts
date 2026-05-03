@@ -16,9 +16,11 @@ import {
   parseAbiParameters,
   parseAbiItem,
   keccak256,
+  encodeFunctionData,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { RebalanceRequest, RiskReport, SettlementIntent } from "./types.js";
+import { submitThroughKeeperHub } from "./keeperhub-client.js";
 
 // Unichain Sepolia Tenderly VNet configuration
 const UNICHAIN_VNET = {
@@ -175,6 +177,8 @@ export interface ExecutionResult {
   success: boolean;
   txHash?: string;
   explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
   error?: string;
 }
 
@@ -336,6 +340,95 @@ export class SettlementExecutor {
   private walletClient: WalletClient | null = null;
   private account: Account | null = null;
 
+  private explorerForTx(txHash: string): string {
+    return `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${txHash}`;
+  }
+
+  /** Encode + route contract writes through KeeperHub when configured. */
+  private async relayEncodedCall(args: {
+    address: Address;
+    abi: readonly unknown[];
+    functionName: string;
+    abiArgs: readonly unknown[];
+    recipeId?: string;
+  }): Promise<{
+    txHash: `0x${string}`;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
+  }> {
+    if (!this.walletClient || !this.account) {
+      throw new Error("No wallet configured for execution");
+    }
+    const data = encodeFunctionData({
+      abi: args.abi as any,
+      functionName: args.functionName as any,
+      args: args.abiArgs as any,
+    });
+    const res = await submitThroughKeeperHub({
+      chainId: UNICHAIN_VNET.id,
+      to: args.address,
+      data,
+      from: this.account.address,
+      recipeId: args.recipeId,
+      sendLocally: () =>
+        this.walletClient!.writeContract({
+          address: args.address,
+          abi: args.abi as any,
+          functionName: args.functionName as any,
+          args: args.abiArgs as any,
+          chain: UNICHAIN_VNET as any,
+          account: this.account,
+        }),
+      buildExplorerUrl: (h) => this.explorerForTx(h),
+    });
+    if (!res.success || !res.txHash) {
+      throw new Error(res.error ?? "KeeperHub relay failed");
+    }
+    return {
+      txHash: res.txHash,
+      keeperExecutionHash: res.keeperExecutionHash,
+      keeperAuditUrl: res.keeperAuditUrl,
+    };
+  }
+
+  private async relaySendTransaction(args: {
+    to: Address;
+    value: bigint;
+    recipeId?: string;
+  }): Promise<{
+    txHash: `0x${string}`;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
+  }> {
+    if (!this.walletClient || !this.account) {
+      throw new Error("No wallet configured for execution");
+    }
+    const res = await submitThroughKeeperHub({
+      chainId: UNICHAIN_VNET.id,
+      to: args.to,
+      data: "0x",
+      value: args.value,
+      from: this.account.address,
+      recipeId: args.recipeId,
+      sendLocally: () =>
+        this.walletClient!.sendTransaction({
+          to: args.to,
+          value: args.value,
+          chain: UNICHAIN_VNET as any,
+          account: this.account,
+        }),
+      buildExplorerUrl: (h) => this.explorerForTx(h),
+    });
+    if (!res.success || !res.txHash) {
+      throw new Error(res.error ?? "KeeperHub relay failed");
+    }
+    return {
+      txHash: res.txHash,
+      keeperExecutionHash: res.keeperExecutionHash,
+      keeperAuditUrl: res.keeperAuditUrl,
+    };
+  }
+
   constructor(privateKey?: `0x${string}`) {
     this.publicClient = createPublicClient({
       chain: UNICHAIN_VNET as any,
@@ -474,13 +567,12 @@ export class SettlementExecutor {
 
       if (erc20Allowance < amount) {
         console.log("[Executor] Approving USDC to Permit2...");
-        const erc20ApprovalHash = await this.walletClient.writeContract({
+        const { txHash: erc20ApprovalHash } = await this.relayEncodedCall({
           address: ADDRESSES.usdc,
           abi: ERC20_ABI,
           functionName: "approve",
-          args: [ADDRESSES.permit2, maxUint256],
-          chain: UNICHAIN_VNET as any,
-          account: this.account,
+          abiArgs: [ADDRESSES.permit2, maxUint256],
+          recipeId: `${report.recipeId}-approve-erc20`,
         });
         await this.publicClient.waitForTransactionReceipt({ hash: erc20ApprovalHash });
         console.log("[Executor] ERC20 approval to Permit2 confirmed:", erc20ApprovalHash);
@@ -503,18 +595,17 @@ export class SettlementExecutor {
         console.log("[Executor] Setting Permit2 allowance for PositionManager...");
         // Set allowance for max uint160 with 30-day expiration
         const newExpiration = nowSeconds + 30 * 24 * 60 * 60; // 30 days from now
-        const permit2ApprovalHash = await this.walletClient.writeContract({
+        const { txHash: permit2ApprovalHash } = await this.relayEncodedCall({
           address: ADDRESSES.permit2,
           abi: PERMIT2_ABI,
           functionName: "approve",
-          args: [
+          abiArgs: [
             ADDRESSES.usdc,
             ADDRESSES.positionManager,
             BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF") as any, // max uint160
             newExpiration,
           ],
-          chain: UNICHAIN_VNET as any,
-          account: this.account,
+          recipeId: `${report.recipeId}-approve-permit2`,
         });
         await this.publicClient.waitForTransactionReceipt({ hash: permit2ApprovalHash });
         console.log("[Executor] Permit2 allowance set, expires:", new Date(newExpiration * 1000).toISOString());
@@ -610,13 +701,16 @@ export class SettlementExecutor {
 
       // Use a fresh deadline at send time to avoid AllowanceExpired
       const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
-      const txHash = await this.walletClient.writeContract({
+      const {
+        txHash,
+        keeperExecutionHash,
+        keeperAuditUrl,
+      } = await this.relayEncodedCall({
         address: ADDRESSES.positionManager,
         abi: POSITION_MANAGER_ABI,
         functionName: "modifyLiquidities",
-        args: [unlockData, deadline],
-        chain: UNICHAIN_VNET as any,
-        account: this.account,
+        abiArgs: [unlockData, deadline],
+        recipeId: report.recipeId,
       });
 
       console.log("[Executor] Transaction hash:", txHash);
@@ -634,12 +728,16 @@ export class SettlementExecutor {
           success: true,
           txHash,
           explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
         };
       } else {
         return {
           success: false,
           txHash,
           explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
           error: "Transaction reverted",
         };
       }
@@ -672,20 +770,22 @@ export class SettlementExecutor {
     try {
       // NOTE: Current VNet integration uses two explicit on-chain transactions
       // to represent withdraw and deposit phases for operational traceability.
-      const withdrawTxHash = await this.walletClient.sendTransaction({
+      const { txHash: withdrawTxHash } = await this.relaySendTransaction({
         to: this.account.address,
         value: 0n,
-        chain: UNICHAIN_VNET as any,
-        account: this.account,
+        recipeId: `rebalance-${request.positionId}-withdraw`,
       });
       await this.publicClient.waitForTransactionReceipt({ hash: withdrawTxHash });
       console.log("[Executor] Withdraw phase tx:", withdrawTxHash);
 
-      const depositTxHash = await this.walletClient.sendTransaction({
+      const {
+        txHash: depositTxHash,
+        keeperExecutionHash,
+        keeperAuditUrl,
+      } = await this.relaySendTransaction({
         to: this.account.address,
         value: 0n,
-        chain: UNICHAIN_VNET as any,
-        account: this.account,
+        recipeId: `rebalance-${request.positionId}-deposit`,
       });
       const receipt = await this.publicClient.waitForTransactionReceipt({
         hash: depositTxHash,
@@ -698,6 +798,8 @@ export class SettlementExecutor {
           success: false,
           txHash: depositTxHash,
           explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
           error: "Rebalance deposit phase reverted",
         };
       }
@@ -706,6 +808,8 @@ export class SettlementExecutor {
         success: true,
         txHash: depositTxHash,
         explorerUrl,
+        keeperExecutionHash,
+        keeperAuditUrl,
       };
     } catch (error) {
       const rawMessage =
@@ -789,11 +893,14 @@ export class SettlementExecutor {
         // If no balance, just send a simple ETH transaction to demonstrate
         console.log("[Executor] Insufficient USDC, sending simple ETH tx instead");
         
-        const txHash = await this.walletClient.sendTransaction({
+        const {
+          txHash,
+          keeperExecutionHash,
+          keeperAuditUrl,
+        } = await this.relaySendTransaction({
           to: recipient,
-          value: 0n, // 0 ETH transfer just to create a tx
-          chain: UNICHAIN_VNET as any,
-          account: this.account,
+          value: 0n,
+          recipeId: `${report.recipeId}-fallback-eth`,
         });
 
         console.log("[Executor] Transaction hash:", txHash);
@@ -810,12 +917,16 @@ export class SettlementExecutor {
             success: true,
             txHash,
             explorerUrl,
+            keeperExecutionHash,
+            keeperAuditUrl,
           };
         } else {
           return {
             success: false,
             txHash,
             explorerUrl,
+            keeperExecutionHash,
+            keeperAuditUrl,
             error: "Transaction reverted",
           };
         }
@@ -835,13 +946,16 @@ export class SettlementExecutor {
         },
       ] as const;
 
-      const txHash = await this.walletClient.writeContract({
+      const {
+        txHash,
+        keeperExecutionHash,
+        keeperAuditUrl,
+      } = await this.relayEncodedCall({
         address: ADDRESSES.usdc,
         abi: TRANSFER_ABI,
         functionName: "transfer",
-        args: [recipient, amount],
-        chain: UNICHAIN_VNET as any,
-        account: this.account,
+        abiArgs: [recipient, amount],
+        recipeId: `${report.recipeId}-simple-transfer`,
       });
 
       console.log("[Executor] Transaction hash:", txHash);
@@ -858,12 +972,16 @@ export class SettlementExecutor {
           success: true,
           txHash,
           explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
         };
       } else {
         return {
           success: false,
           txHash,
           explorerUrl,
+          keeperExecutionHash,
+          keeperAuditUrl,
           error: "Transaction reverted",
         };
       }
