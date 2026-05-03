@@ -14,9 +14,12 @@ import type {
   OracleDataReport,
   ThresholdConfig,
   PoolKeyReport,
+  AgentProfile,
+  ProfileAction,
 } from "../types";
 import {
   DEFAULT_THRESHOLDS,
+  PROFILE_DEVIATION_BANDS,
   determineSeverity,
   meetsLiquidityRequirement,
   calculateMinLiquidity,
@@ -39,6 +42,56 @@ export class FatalStateError extends Error {
  * Returns true when the chain name looks like a testnet.
  * Matches common testnet suffixes/keywords used in this codebase.
  */
+export function effectiveAgentProfile(intent: SettlementIntent): AgentProfile {
+  return intent.agentProfile ?? "balanced";
+}
+
+/**
+ * Maps profile + observed deviation to recommended action and backstop audit flag.
+ */
+export function deriveProfileMetadata(
+  profile: AgentProfile,
+  deviationPercent: number | undefined
+): {
+  profileAction?: ProfileAction;
+  stabilizationIntentLogged?: boolean;
+} {
+  if (deviationPercent === undefined || Number.isNaN(deviationPercent)) {
+    return {};
+  }
+  const bands = PROFILE_DEVIATION_BANDS[profile];
+
+  if (profile === "conservative") {
+    if (deviationPercent > bands.exitAt) {
+      return { profileAction: "FULL_EXIT" };
+    }
+    return {};
+  }
+
+  if (profile === "balanced") {
+    if (deviationPercent > bands.exitAt) {
+      return { profileAction: "FULL_EXIT" };
+    }
+    if (
+      bands.rotateAt !== undefined &&
+      deviationPercent > bands.rotateAt &&
+      deviationPercent <= bands.exitAt
+    ) {
+      return { profileAction: "PARTIAL_ROTATE_HOLD" };
+    }
+    return {};
+  }
+
+  // backstop
+  if (deviationPercent > bands.exitAt) {
+    return { profileAction: "FULL_EXIT" };
+  }
+  return {
+    profileAction: "HOLD_LOG_INTENT",
+    stabilizationIntentLogged: true,
+  };
+}
+
 function isTestnetChain(chainName: string): boolean {
   const lower = chainName.toLowerCase();
   return (
@@ -62,6 +115,7 @@ export function evaluateRisk(
   config: WorkflowConfig
 ): RiskCheck[] {
   const thresholds = config.thresholds ?? DEFAULT_THRESHOLDS;
+  const profile = effectiveAgentProfile(intent);
   const checks: RiskCheck[] = [];
 
   // 1. Slippage Check
@@ -81,12 +135,12 @@ export function evaluateRisk(
       name: "priceDeviation",
       passed: true,
       actual: "N/A",
-      threshold: thresholds.maxPriceDeviationPercent,
+      threshold: PROFILE_DEVIATION_BANDS[profile].passMax,
       severity: "info",
-      description: `Price deviation check skipped — testnet chain (${intent.targetChain}) has no reliable market price`,
+      description: `Price deviation check skipped — testnet chain (${intent.targetChain}) has no reliable market price (profile=${profile})`,
     });
   } else {
-    checks.push(evaluatePriceDeviation(oracle, pool, thresholds));
+    checks.push(evaluatePriceDeviation(oracle, pool, profile, thresholds));
   }
 
   // 5. Price Staleness Check (bonus check)
@@ -193,7 +247,8 @@ function evaluateBridgeDelay(
 function evaluatePriceDeviation(
   oracle: OracleData,
   pool: PoolData,
-  thresholds: ThresholdConfig
+  profile: AgentProfile,
+  _thresholds: ThresholdConfig
 ): RiskCheck {
   // Calculate DEX price from pool state
   const dexPrice = sqrtPriceX96ToPrice(pool.sqrtPriceX96);
@@ -203,23 +258,38 @@ function evaluatePriceDeviation(
 
   // Calculate deviation percentage
   const deviation = calculatePriceDeviation(dexPrice, oraclePrice);
-  const maxDeviation = thresholds.maxPriceDeviationPercent;
+  const bands = PROFILE_DEVIATION_BANDS[profile];
 
-  const passed = deviation <= maxDeviation;
-
-  // Price deviation > 5% is critical, otherwise warning
+  let passed: boolean;
   let severity: "info" | "warning" | "critical" = "info";
-  if (!passed) {
-    severity = deviation > 5 ? "critical" : "warning";
+
+  if (profile === "balanced") {
+    passed = deviation <= bands.passMax;
+    if (deviation > bands.exitAt) {
+      severity = "critical";
+    } else if (deviation > (bands.rotateAt ?? bands.passMax)) {
+      severity = "warning";
+    }
+  } else {
+    // conservative & backstop: single pass band up to passMax (= exitAt)
+    passed = deviation <= bands.passMax;
+    if (!passed) {
+      severity = "critical";
+    }
   }
+
+  const thresholdLabel =
+    profile === "balanced"
+      ? `pass≤${bands.passMax}% / rotate ${bands.rotateAt}-${bands.exitAt}% / exit>${bands.exitAt}%`
+      : `pass≤${bands.passMax}%`;
 
   return {
     name: "priceDeviation",
     passed,
     actual: Number(deviation.toFixed(4)),
-    threshold: maxDeviation,
+    threshold: thresholdLabel,
     severity,
-    description: `Oracle/DEX price deviation ${deviation.toFixed(2)}% vs max ${maxDeviation}%`,
+    description: `Oracle/DEX deviation ${deviation.toFixed(2)}% (${profile} profile: ${thresholdLabel})`,
   };
 }
 
@@ -278,6 +348,19 @@ export function buildReport(
   selectedPoolId?: string,
   selectedPoolKey?: PoolKeyReport
 ): RiskReport {
+  const agentProfile = effectiveAgentProfile(intent);
+  const priceDeviationCheck = checks.find((c) => c.name === "priceDeviation");
+  let priceDeviationPercent: number | undefined;
+  if (
+    priceDeviationCheck &&
+    typeof priceDeviationCheck.actual === "number"
+  ) {
+    priceDeviationPercent = priceDeviationCheck.actual;
+  }
+  const { profileAction, stabilizationIntentLogged } = deriveProfileMetadata(
+    agentProfile,
+    priceDeviationPercent
+  );
   // Serialize oracle data for JSON
   const oracleData: OracleDataReport = {
     ethUsdPrice: oracle.ethUsdPrice.toString(),
@@ -314,6 +397,14 @@ export function buildReport(
     );
   }
 
+  const metaNotes = [...notes];
+  if (profileAction) {
+    metaNotes.push(`Profile action: ${profileAction}`);
+  }
+  if (stabilizationIntentLogged) {
+    metaNotes.push("Backstop stabilization intent logged for future incentive hooks");
+  }
+
   return {
     status,
     checks,
@@ -327,8 +418,16 @@ export function buildReport(
     ...(selectedPoolKey !== undefined ? { selectedPoolKey } : {}),
     metadata: {
       executionId,
+      agentProfile,
+      ...(profileAction !== undefined ? { profileAction } : {}),
+      ...(stabilizationIntentLogged !== undefined
+        ? { stabilizationIntentLogged }
+        : {}),
+      ...(priceDeviationPercent !== undefined
+        ? { priceDeviationPercent }
+        : {}),
       // Omit notes when empty — undefined inside objects crashes CRE's serializer.
-      ...(notes.length > 0 ? { notes } : {}),
+      ...(metaNotes.length > 0 ? { notes: metaNotes } : {}),
     },
   };
 }

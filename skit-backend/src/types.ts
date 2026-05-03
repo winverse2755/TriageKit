@@ -3,6 +3,44 @@
  * Mirrors types from skit-risk-guard/risk-guard-workflow/types.ts
  */
 
+export type AgentProfile = "conservative" | "balanced" | "backstop";
+
+export type ProfileAction =
+  | "FULL_EXIT"
+  | "PARTIAL_ROTATE_HOLD"
+  | "HOLD_LOG_INTENT";
+
+export type RotationExecutionStatus =
+  | "NOT_TRIGGERED"
+  | "QUOTED"
+  | "EXECUTED"
+  | "FAILED";
+
+export interface RotationQuote {
+  provider: "uniswap";
+  chainId: number;
+  fromToken: string;
+  toToken: string;
+  amountIn: string;
+  amountOut: string;
+  route: string[];
+  raw?: Record<string, unknown>;
+}
+
+export interface RotationMetadata {
+  shouldRotate: boolean;
+  partialExitAmount: string;
+  fromToken: string;
+  toToken: string;
+  quote?: RotationQuote;
+  executionStatus: RotationExecutionStatus;
+  executionError?: string;
+  txHash?: string;
+  explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
+}
+
 export interface SettlementIntent {
   sourceChain: string;
   targetChain: string;
@@ -12,6 +50,7 @@ export interface SettlementIntent {
   maxBridgeDelay: number;
   sourceRpc: string;
   targetRpc: string;
+  agentProfile?: AgentProfile;
 }
 
 export type CheckSeverity = "info" | "warning" | "critical";
@@ -74,6 +113,11 @@ export interface RiskReport {
   metadata?: {
     executionId?: string;
     notes?: string[];
+    agentProfile?: AgentProfile;
+    profileAction?: ProfileAction;
+    stabilizationIntentLogged?: boolean;
+    priceDeviationPercent?: number;
+    rotation?: RotationMetadata;
   };
 }
 
@@ -118,6 +162,8 @@ export interface Settlement {
   riskReport?: RiskReport;
   txHash?: string;
   explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -199,6 +245,8 @@ export interface SettlementRow {
   risk_report: string | null;
   tx_hash: string | null;
   explorer_url: string | null;
+  keeper_execution_hash?: string | null;
+  keeper_audit_url?: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -222,6 +270,8 @@ export interface SettlementResponse {
   execution?: {
     txHash: string;
     explorerUrl: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
   };
   createdAt: number;
   updatedAt: number;

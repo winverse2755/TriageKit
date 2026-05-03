@@ -1,7 +1,29 @@
 // skit-risk-guard/risk-guard-workflow/evaluator/thresholds.ts
 // Default thresholds and helper functions for risk evaluation
 
-import type { ThresholdConfig, CheckSeverity } from "../types";
+import type { AgentProfile, ThresholdConfig, CheckSeverity } from "../types";
+
+/**
+ * Profile-specific oracle/DEX deviation bands (%).
+ * - conservative: treat above exitThreshold as failed (full exit regime)
+ * - balanced: warn between rotateAt and exitAt; critical above exitAt
+ * - backstop: pass until holdUntil; critical above holdUntil
+ */
+export const PROFILE_DEVIATION_BANDS: Record<
+  AgentProfile,
+  {
+    /** Deviation % at or below: check passes */
+    passMax: number;
+    /** For balanced: warning band starts above this */
+    rotateAt?: number;
+    /** Above this: critical (full exit) */
+    exitAt: number;
+  }
+> = {
+  conservative: { passMax: 3, exitAt: 3 },
+  balanced: { passMax: 5, rotateAt: 5, exitAt: 10 },
+  backstop: { passMax: 20, exitAt: 20 },
+};
 
 /**
  * Default threshold configuration.

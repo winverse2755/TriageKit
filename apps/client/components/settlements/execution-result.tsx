@@ -16,19 +16,44 @@ interface ExecutionResultProps {
   txHash: string;
   success?: boolean;
   errorMessage?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
+  rotation?: {
+    partialExitAmount: string;
+    fromToken: string;
+    toToken: string;
+    executionStatus: string;
+    executionError?: string;
+    quote?: {
+      amountOut: string;
+      route: string[];
+    };
+  };
 }
 
 export function ExecutionResult({
   txHash,
   success = true,
   errorMessage,
+  keeperExecutionHash,
+  keeperAuditUrl,
+  rotation,
 }: ExecutionResultProps) {
   const [copied, setCopied] = useState(false);
+  const [copiedKeeper, setCopiedKeeper] = useState(false);
+  const hasTxHash = txHash.startsWith('0x');
 
   const copyHash = () => {
     navigator.clipboard.writeText(txHash);
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
+  };
+
+  const copyKeeperHash = () => {
+    if (!keeperExecutionHash) return;
+    navigator.clipboard.writeText(keeperExecutionHash);
+    setCopiedKeeper(true);
+    setTimeout(() => setCopiedKeeper(false), 1500);
   };
 
   return (
@@ -76,33 +101,102 @@ export function ExecutionResult({
             >
               {truncateHash(txHash)}
             </span>
-            <Button
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={copyHash}
-              title={copied ? 'Copied!' : 'Copy hash'}
-            >
-              <Copy className="h-4 w-4" />
-            </Button>
+            {hasTxHash ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={copyHash}
+                title={copied ? 'Copied!' : 'Copy hash'}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            ) : null}
           </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="border-primary text-primary hover:bg-primary/10"
-          asChild
-        >
-          <a
-            href={getTenderlyTxUrl(txHash)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2"
-          >
-            <ExternalLink className="h-4 w-4" />
-            View on Tenderly
-          </a>
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          {hasTxHash ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-primary text-primary hover:bg-primary/10"
+              asChild
+            >
+              <a
+                href={getTenderlyTxUrl(txHash)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                View on Tenderly
+              </a>
+            </Button>
+          ) : null}
+          {keeperAuditUrl ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className="border-muted-foreground/40"
+              asChild
+            >
+              <a
+                href={keeperAuditUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2"
+              >
+                <ExternalLink className="h-4 w-4" />
+                KeeperHub audit
+              </a>
+            </Button>
+          ) : null}
+        </div>
+        {keeperExecutionHash ? (
+          <div>
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+              KeeperHub execution hash
+            </div>
+            <div className="flex items-center gap-2">
+              <span
+                className="font-mono text-sm text-foreground"
+                title={keeperExecutionHash}
+              >
+                {truncateHash(keeperExecutionHash, 12, 10)}
+              </span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                onClick={copyKeeperHash}
+                title={copiedKeeper ? 'Copied!' : 'Copy KeeperHub hash'}
+              >
+                <Copy className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        ) : null}
+        {rotation ? (
+          <div className="rounded-lg border border-border/50 px-3 py-3">
+            <div className="text-[12px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+              Collateral Rotation
+            </div>
+            <p className="font-mono text-sm">
+              {rotation.fromToken} -&gt; {rotation.toToken} | partialExit={rotation.partialExitAmount}
+            </p>
+            <p className="font-mono text-xs text-muted-foreground mt-1">
+              status={rotation.executionStatus}
+              {rotation.quote?.route?.length
+                ? ` | route=${rotation.quote.route.join(" -> ")}`
+                : ""}
+            </p>
+            {rotation.executionError ? (
+              <p className="font-mono text-xs text-destructive mt-1">
+                error={rotation.executionError}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
       </CardContent>
     </Card>
   );

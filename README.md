@@ -1,235 +1,183 @@
-# SettleKit
+# TriageKit
 
-**Agentic Cross-Chain Settlement SDK for DeFi**
+**Cooperative Risk Response for Agentic DeFi**
 
-SettleKit is a TypeScript SDK that enables agents to execute complex cross-chain DeFi actions as a single deterministic settlement flow.
-
-Instead of asking users to manually bridge, swap, and supply assets across multiple chains and interfaces, SettleKit turns these steps into a programmable **settlement recipe** that can be executed automatically by software.
-
-**Verifiable Risk & Compliance Layer for Agentic Cross-Chain DeFi**
-
-SettleKit Risk Guard extends SettleKit with a live risk monitoring and compliance system powered by Chainlink CRE. Before any settlement executes, a CRE Workflow evaluates real-time risk signals and either clears or blocks execution. Every decision is auditable, every outcome is traceable.
+TriageKit builds on [SettleKit](https://github.com/winverse2755/SettleKit) to add one thing SettleKit doesn't have: **proportional crisis response**. When SettleKit's risk workflow flags a distressed asset, TriageKit decides *how* to respond based on the user's pre-declared risk profile — rotating collateral instead of panic-exiting, and executing reliably even when the network is under stress.
 
 ---
 
-### The Problem
+### The Gap TriageKit Fills
 
-Agentic DeFi is coming — software that bridges and deploys capital across chains without user intervention. But agents executing financial flows autonomously have no safety net today. There is no standard way to evaluate whether a settlement is safe before it executes, and no verifiable record of the risk decisions made along the way.
+SettleKit evaluates risk before settlement and blocks unsafe execution. But `BLOCKED` and `WARNING` only stop the action — they don't tell the agent what to do instead.
+
+When a contagion event hits (a bridge drain, an LRT depeg, a liquidity shock), every agent faces the same binary: exit or do nothing. Mass exits become synchronized bank runs. TriageKit replaces that binary with a third path: **controlled rotation**.
 
 ---
 
-### What It Does
+### Agent Risk Profiles
 
-SettleKit Risk Guard adds four things on top of the base SettleKit SDK:
+Users set a profile once. TriageKit uses it every time the CRE workflow fires a `WARNING` or `BLOCKED`.
 
-**1. CRE Risk Workflow**
-Before any settlement executes, a Chainlink CRE Workflow fans out to multiple data sources in parallel — Chainlink Data Feeds for verifiable oracle prices, the Uniswap v4 PoolManager for live pool health, and the Circle CCTP API for bridge status. It evaluates five risk checks and emits a signed report: `APPROVED`, `WARNING`, or `BLOCKED`. The Deterministic Executor only fires on `APPROVED`.
+| Profile | Trigger | Action |
+|---|---|---|
+| `conservative` | Deviation > 3% | Full exit |
+| `balanced` | Deviation 5–10% | Rotate 50% to safer asset via Uniswap, hold remainder |
+| `balanced` | Deviation > 10% | Full exit |
+| `backstop` | Deviation > 20% | Hold + log stabilization intent |
 
-**2. Risk Explorer**
-Every settlement gets a public URL showing its full execution trace, oracle data consumed, each risk check result, CRE workflow output, and a Tenderly Virtual TestNet explorer link for the underlying transaction. Every claim is backed by a clickable transaction link.
+Set via Telegram: `/profile balanced`
 
-**3. Telegram Bot**
-Real-time alerts when a settlement is flagged. Operators can query status, run dry-runs, and manually override warnings — all from Telegram.
+Thresholds are encoded at setup and cannot be overridden mid-crisis. The agent follows the rule the user agreed to in advance.
 
-**4. 24h Pool Monitoring**
-A scheduled CRE Workflow scans active Uniswap v4 positions every 24 hours. If the current pool liquidity falls below threshold, the system automatically rebalances to the deepest available pool and alerts the operator via Telegram.
+---
+
+### Collateral Rotation (Uniswap API)
+
+The balanced profile's core action. Instead of withdrawing, the agent swaps the distressed asset into a safer correlated position.
+
+```typescript
+// Triggered: balanced profile + deviation between 5–10%
+const quote = await uniswapApi.quote({
+  tokenIn:           'rsETH',
+  tokenOut:          'wstETH',
+  amount:            partialExitAmount,
+  slippageTolerance: 0.5
+});
+
+await uniswapApi.swap(quote, { signer: agentWallet });
+```
+
+Rotation output — amount swapped, route, execution status — is surfaced in the SettleKit Risk Explorer on every settlement.
+
+---
+
+### Reliable Execution (KeeperHub)
+
+Direct transaction submission fails under the exact conditions TriageKit is designed for: gas spikes, mempool congestion, and network stress during a crisis event. All TriageKit actions — exits and rotations — are routed through KeeperHub's MCP.
+
+```typescript
+await keeperhubClient.execute({
+  recipe,
+  retryPolicy: 'exponential',
+  gasMode:     'private',
+  auditTrail:  true
+});
+```
+
+KeeperHub provides exponential retry, private gas routing, MEV protection, and a full audit trail. The execution hash is stored in the Risk Explorer alongside the existing Tenderly link.
 
 ---
 
 ### Architecture
 
 ```
-Agent / User
+User / Agent
      │
      ▼
-Execution Planner (SettleKit SDK)
-     │
-     ▼
-CRE Risk Workflow (Chainlink)
-  ├── Chainlink Data Feeds (USDC/USD, ETH/USD)
-  ├── Uniswap v4 PoolManager (via Tenderly VNet RPC)
-  └── Circle CCTP API (bridge status)
-     │
-     ▼
-Risk Report { APPROVED | WARNING | BLOCKED }
-     │
-     ├──► Risk Explorer (public settlement URL + Tenderly tx link)
-     └──► Telegram Bot (push alert if WARNING or BLOCKED)
-     │
-     ▼ (APPROVED only)
-Deterministic Executor
-  ├── Bridge: Base Sepolia → Unichain Sepolia via CCTP
-  └── Deposit: Uniswap v4 PoolManager on Unichain Sepolia
-     │
-     ▼
-Tenderly Virtual TestNet (transaction recorded + explorer link generated)
+┌──────────────────────────┐
+│   Agent Profile Config    │
+│   /profile <type>         │
+│   (Telegram or SDK)       │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────┐
+│   SettleKit SDK           │
+│   CRE Risk Workflow       │
+│   Risk Report             │
+│   { APPROVED |            │
+│     WARNING | BLOCKED }   │
+└────────────┬─────────────┘
+             │
+             ▼
+┌──────────────────────────────────────────┐
+│   TriageKit Response Engine               │
+│                                          │
+│   APPROVED + any profile  → execute      │
+│   WARNING  + conservative → full exit    │
+│   WARNING  + balanced     → rotate 50%   │
+│                             + hold rest  │
+│   WARNING  + backstop     → hold + log   │
+│   BLOCKED  + any profile  → full exit    │
+└────────┬─────────────┬────────────────── ┘
+         │             │
+         ▼             ▼
+┌──────────────┐  ┌───────────────────────┐
+│  Uniswap API │  │  Direct exit           │
+│  Quote +     │  │  (conservative /       │
+│  Swap        │  │   BLOCKED)             │
+│  rsETH →     │  └──────────┬────────────┘
+│  wstETH      │             │
+└──────┬───────┘             │
+       └──────────┬──────────┘
+                  │
+                  ▼
+┌──────────────────────────────────────────┐
+│   KeeperHub Execution Layer               │
+│   Exponential retry · Private gas         │
+│   MEV protection · Audit trail            │
+└────────────┬─────────────────────────────┘
+             │
+             ▼
+┌──────────────────────────────────────────┐
+│   SettleKit Deterministic Executor        │
+│   Bridge (CCTP) + Deposit (Uniswap v4)   │
+└────────────┬─────────────────────────────┘
+             │
+             ▼
+   Risk Explorer (KeeperHub hash
+   + Tenderly tx link + rotation
+   output per settlement)
 ```
 
 ---
 
-### Chainlink Integration
-
-| Component | Chainlink Service | File |
-|---|---|---|
-| Oracle price feeds | Chainlink Data Feeds (USDC/USD, ETH/USD) | [`workflow/steps/fetchOracleData.ts`](./workflow/steps/fetchOracleData.ts) |
-| Risk orchestration | Chainlink Runtime Environment (CRE) | [`workflow/workflow.yaml`](./workflow/workflow.yaml) |
-| 24h pool monitoring | CRE scheduled workflow | [`workflow/monitoring.yaml`](./workflow/monitoring.yaml) |
-| HTTP data fetches | CRE HTTP capability | [`workflow/steps/fetchPoolHealth.ts`](./workflow/steps/fetchPoolHealth.ts) |
-
-> **Note:** Unichain Sepolia is not yet supported by CRE's native EVM capability (`evm:ChainSelector`). Pool health reads use CRE's HTTP capability with direct JSON-RPC calls to the Tenderly Virtual TestNet RPC endpoint as a workaround. This is documented inline in `fetchPoolHealth.ts`.
-
----
-
-### Risk Checks
-
-Every settlement is evaluated against five checks before execution:
-
-| Check | Description | Severity |
-|---|---|---|
-| `slippage` | Simulated slippage vs configured max | Critical |
-| `liquidity` | Pool liquidity depth vs minimum required | Critical |
-| `bridgeDelay` | CCTP estimated confirmation time vs max | Info |
-| `priceDeviation` | Oracle price vs DEX execution price | Critical |
-| `priceStaleness` | Oracle price age vs max staleness threshold | Info |
-
-> `priceDeviation` is skipped on testnet chains (Base Sepolia, Unichain Sepolia) as testnet pools have no reliable market price. This is noted explicitly in the risk report output.
-
----
-
-### Telegram Bot Commands
+### New Telegram Commands
 
 | Command | Description |
 |---|---|
-| `/simulate <amount> <from_chain> <to_pool>` | Dry-run CRE risk workflow, returns report + Tenderly sim link |
-| `/status <settlementId>` | Current state of an in-flight settlement |
-| `/alerts on\|off` | Toggle real-time push alerts |
-| `/approve <settlementId>` | Manually clear a WARNING-status settlement |
-| `/history` | Last 5 settlements with status and explorer links |
-| `/positions` | All active pool positions with latest monitoring status |
-| `/rebalance <positionId>` | Manually trigger rebalance (fallback if auto-rebalance fails) |
-| `/fork status` | Confirm both Tenderly Virtual TestNets are live and synced |
+| `/profile <type>` | Set agent profile: `conservative`, `balanced`, `backstop` |
+| `/profile status` | Show current active profile and thresholds |
+
+All existing SettleKit bot commands remain unchanged. See [SettleKit docs](https://github.com/winverse2755/SettleKit) for the full list.
 
 ---
 
-### Tenderly Integration
+### Environment Setup
 
-Tenderly Virtual TestNets fork Base Sepolia and Unichain Sepolia to provide a controlled execution environment with real testnet state. Every settlement execution produces a Tenderly explorer transaction link that is stored in the Risk Explorer and surfaced in Telegram alerts.
-
-**Virtual TestNet Explorer:**
-- Base Sepolia fork: `https://dashboard.tenderly.co/winverse/project/testnet/eec39e2c-ca1c-491a-aa58-c05a1ccf80d3`
-- Unichain Sepolia fork: `https://dashboard.tenderly.co/winverse/project/testnet/22cbc0df-919d-4cdc-927b-436480a7129f`
-
----
-
-### Tech Stack
-
-- TypeScript SDK
-- Chainlink CRE (Runtime Environment)
-- Chainlink Data Feeds
-- Tenderly Virtual TestNets
-- viem
-- Circle CCTP (Base Sepolia → Unichain Sepolia)
-- Uniswap v4 PoolManager
-- Node.js / Express backend
-- SQLite
-- Telegram Bot API
-- ngrok (local development)
-
----
-
-### Getting Started
-
-#### Prerequisites
-
-```bash
-node >= 18
-npm >= 9
-cre-cli installed: npm install -g @chainlink/cre-cli
-```
-
-#### Installation
-
-```bash
-git clone https://github.com/your-repo/settlekit-risk-guard
-cd settlekit-risk-guard
-npm install
-```
-
-#### Environment Setup
-
-```bash
-cp .env.example .env
-```
-
-Fill in the following variables:
+TriageKit adds two variables to the existing SettleKit `.env`:
 
 ```env
-PRIVATE_KEY=0x...
-TENDERLY_BASE_SEPOLIA_RPC=https://virtual.base-sepolia.eu.rpc.tenderly.co/<your-id>
-TENDERLY_UNICHAIN_SEPOLIA_RPC=https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/<your-id>
-TELEGRAM_BOT_TOKEN=...
-WEBHOOK_URL=https://<your-ngrok-or-deployed-url>/webhook
+KEEPERHUB_API_KEY=...
+UNISWAP_API_KEY=...
 ```
-
-#### Run the Backend
-
-```bash
-npm run dev
-```
-
-#### Run the CRE Workflow Simulation
-
-```bash
-cd workflow
-cre workflow simulate --config config.yaml --workflow workflow.yaml --input test-input.json
-```
-
-#### Run the Telegram Bot
-
-```bash
-npm run bot
-```
-
----
-
-### Testnet Proof
-
-**Tenderly Virtual TestNet explorer (Risk Guard execution):**
-[View on Tenderly](https://dashboard.tenderly.co/winverse/project/testnet/22cbc0df-919d-4cdc-927b-436480a7129f/tx/0x8fb8a4bc10191fc450338f72f67daf7072e1214ad54caa7ec35f4c3b100e4e62)
 
 ---
 
 ### Project Structure
 
+TriageKit adds a single package on top of the SettleKit monorepo:
+
 ```
-settlekit-risk-guard/
-├── workflow/
-│   ├── workflow.yaml          # CRE risk check workflow
-│   ├── monitoring.yaml        # CRE 24h monitoring workflow
-│   ├── config.yaml            # Workflow configuration
-│   ├── test-input.json        # Hardcoded test recipe for simulation
-│   └── steps/
-│       ├── fetchOracleData.ts       # Chainlink Data Feeds
-│       ├── fetchPoolHealth.ts       # Uniswap v4 pool via Tenderly RPC
-│       ├── fetchBridgeStatus.ts     # Circle CCTP API
-│       ├── evaluateRisk.ts          # Risk threshold evaluation
-│       └── emitReport.ts            # Report construction + webhook emit
-├── backend/
-│   ├── server.ts              # Express server + endpoints
-│   ├── executor.ts            # SettleKit deterministic executor
-│   ├── db.ts                  # SQLite store
-│   └── telegram.ts            # Telegram bot + alert handler
-├── frontend/
-│   └── ...                    # Risk Explorer UI
-├── .env.example
-└── README.md
+packages/
+└── triage/
+    ├── profiles.ts          # AgentProfile type + threshold config
+    ├── responseEngine.ts    # Profile-aware action dispatcher
+    └── rotateCollateral.ts  # Uniswap API collateral rotation
+skit-risk-guard/
+└── evaluateRisk.ts          # Extended: profile-aware threshold evaluation
+backend/
+└── executor.ts              # Extended: KeeperHub-routed execution
+FEEDBACK.md                  # Uniswap API builder feedback
 ```
 
 ---
 
-### Vision
+### Roadmap
 
-Future financial apps will not ask users to bridge and deposit manually. Agents will do it for them. SettleKit Risk Guard is the compliance layer that makes autonomous cross-chain execution safe, auditable, and verifiable by default — with Chainlink CRE as the orchestration spine that ties it all together.
+- Live cross-chain bridge invariant monitoring (replace simulated signals)
+- Backstop incentive detection when protocols expose crisis yield hooks
+- On-chain pre-commitment contracts encoding profile thresholds immutably
 
 ---
 

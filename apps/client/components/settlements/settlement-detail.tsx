@@ -28,6 +28,7 @@ export interface SettlementIntent {
   maxBridgeDelay: number;
   sourceRpc: string;
   targetRpc: string;
+  agentProfile?: 'conservative' | 'balanced' | 'backstop';
 }
 
 export interface RiskCheck {
@@ -63,6 +64,27 @@ export interface RiskReport {
   timestamp: number;
   intent: SettlementIntent;
   selectedPoolId?: string;
+  metadata?: {
+    executionId?: string;
+    notes?: string[];
+    agentProfile?: string;
+    profileAction?: string;
+    stabilizationIntentLogged?: boolean;
+    priceDeviationPercent?: number;
+    rotation?: {
+      shouldRotate: boolean;
+      partialExitAmount: string;
+      fromToken: string;
+      toToken: string;
+      executionStatus: string;
+      executionError?: string;
+      quote?: {
+        amountOut: string;
+        route: string[];
+      };
+      txHash?: string;
+    };
+  };
 }
 
 export interface Settlement {
@@ -70,9 +92,16 @@ export interface Settlement {
   intent: SettlementIntent;
   status: string;
   riskReport?: RiskReport;
-  execution?: { txHash: string; explorerUrl: string };
+  execution?: {
+    txHash: string;
+    explorerUrl: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
+  };
   txHash?: string;
   explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -161,6 +190,7 @@ export function SettlementDetail({ settlement }: SettlementDetailProps) {
           <RecipeBreakdown
             intent={settlement.intent}
             selectedPoolId={report?.selectedPoolId}
+            rotation={report?.metadata?.rotation}
           />
         </motion.div>
 
@@ -198,7 +228,7 @@ export function SettlementDetail({ settlement }: SettlementDetailProps) {
           </>
         )}
 
-        {(txHash || settlement.execution) && (
+        {(txHash || settlement.execution || report?.metadata?.rotation) && (
           <motion.div
             initial="hidden"
             animate="visible"
@@ -206,8 +236,16 @@ export function SettlementDetail({ settlement }: SettlementDetailProps) {
             transition={{ duration: 0.3, delay: 1.25 }}
           >
             <ExecutionResult
-              txHash={txHash!}
+              txHash={txHash ?? report?.metadata?.rotation?.txHash ?? "n/a"}
               success={settlement.status !== 'FAILED'}
+              keeperExecutionHash={
+                settlement.execution?.keeperExecutionHash ??
+                settlement.keeperExecutionHash
+              }
+              keeperAuditUrl={
+                settlement.execution?.keeperAuditUrl ?? settlement.keeperAuditUrl
+              }
+              rotation={report?.metadata?.rotation}
             />
           </motion.div>
         )}

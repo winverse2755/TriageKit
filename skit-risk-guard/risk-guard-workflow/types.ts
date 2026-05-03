@@ -2,6 +2,50 @@
 // Type definitions for the CRE Risk Guard Workflow
 
 /**
+ * Agent risk profile: pre-commitment behavior under stress (TriageKit / Risk Guard).
+ */
+export type AgentProfile = "conservative" | "balanced" | "backstop";
+
+/**
+ * Recommended response action derived from profile + observed deviation.
+ */
+export type ProfileAction =
+  | "FULL_EXIT"
+  | "PARTIAL_ROTATE_HOLD"
+  | "HOLD_LOG_INTENT";
+
+export type RotationExecutionStatus =
+  | "NOT_TRIGGERED"
+  | "QUOTED"
+  | "EXECUTED"
+  | "FAILED";
+
+export interface RotationQuote {
+  provider: "uniswap";
+  chainId: number;
+  fromToken: string;
+  toToken: string;
+  amountIn: string;
+  amountOut: string;
+  route: string[];
+  raw?: Record<string, unknown>;
+}
+
+export interface RotationMetadata {
+  shouldRotate: boolean;
+  partialExitAmount: string;
+  fromToken: string;
+  toToken: string;
+  quote?: RotationQuote;
+  executionStatus: RotationExecutionStatus;
+  executionError?: string;
+  txHash?: string;
+  explorerUrl?: string;
+  keeperExecutionHash?: string;
+  keeperAuditUrl?: string;
+}
+
+/**
  * Settlement intent payload received via HTTP trigger.
  * Contains all parameters needed to assess risk for a cross-chain settlement.
  */
@@ -22,6 +66,8 @@ export interface SettlementIntent {
   sourceRpc: string;
   /** Tenderly fork RPC endpoint for target chain */
   targetRpc: string;
+  /** Optional agent risk profile (defaults to balanced if omitted) */
+  agentProfile?: AgentProfile;
 }
 
 /**
@@ -329,6 +375,16 @@ export interface RiskReport {
     executionId?: string;
     /** Any warnings or notes */
     notes?: string[];
+    /** Effective agent profile used for this evaluation */
+    agentProfile?: AgentProfile;
+    /** Derived action when deviation triggers a profile-specific response */
+    profileAction?: ProfileAction;
+    /** Backstop: stabilization intent recorded for audit */
+    stabilizationIntentLogged?: boolean;
+    /** Observed oracle/DEX deviation % at evaluation (mainnet pools only) */
+    priceDeviationPercent?: number;
+    /** Rotation details for PARTIAL_ROTATE_HOLD profile action */
+    rotation?: RotationMetadata;
   };
 }
 

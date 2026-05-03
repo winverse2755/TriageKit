@@ -2,16 +2,42 @@
  * Types for the SettleKit backend server
  * Mirrors types from skit-risk-guard/risk-guard-workflow/types.ts
  */
+export type AgentProfile = "conservative" | "balanced" | "backstop";
+export type ProfileAction = "FULL_EXIT" | "PARTIAL_ROTATE_HOLD" | "HOLD_LOG_INTENT";
+export type RotationExecutionStatus = "NOT_TRIGGERED" | "QUOTED" | "EXECUTED" | "FAILED";
+export interface RotationQuote {
+    provider: "uniswap";
+    chainId: number;
+    fromToken: string;
+    toToken: string;
+    amountIn: string;
+    amountOut: string;
+    route: string[];
+    raw?: Record<string, unknown>;
+}
+export interface RotationMetadata {
+    shouldRotate: boolean;
+    partialExitAmount: string;
+    fromToken: string;
+    toToken: string;
+    quote?: RotationQuote;
+    executionStatus: RotationExecutionStatus;
+    executionError?: string;
+    txHash?: string;
+    explorerUrl?: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
+}
 export interface SettlementIntent {
     sourceChain: string;
     targetChain: string;
     token: string;
     amount: string;
-    targetPoolAddress: string;
     maxSlippageTolerance: number;
     maxBridgeDelay: number;
     sourceRpc: string;
     targetRpc: string;
+    agentProfile?: AgentProfile;
 }
 export type CheckSeverity = "info" | "warning" | "critical";
 export type RiskStatus = "APPROVED" | "WARNING" | "BLOCKED" | "HEALTHY" | "MOVE_RECOMMENDED";
@@ -39,6 +65,14 @@ export interface OracleDataReport {
     usdcUsdPrice: string;
     timestamp: number;
 }
+/** Pool key for Uniswap v4 (used by executor when report includes selected pool) */
+export interface PoolKeyReport {
+    currency0: string;
+    currency1: string;
+    fee: number;
+    tickSpacing: number;
+    hooks: string;
+}
 export interface RiskReport {
     status: RiskStatus;
     checks: RiskCheck[];
@@ -48,9 +82,18 @@ export interface RiskReport {
     recipeId: string;
     timestamp: number;
     intent: SettlementIntent;
+    /** Resolved pool ID from discovery (Uniswap v4 pool key hash) */
+    selectedPoolId?: string;
+    /** Resolved pool key for execution (when workflow discovered the pool) */
+    selectedPoolKey?: PoolKeyReport;
     metadata?: {
         executionId?: string;
         notes?: string[];
+        agentProfile?: AgentProfile;
+        profileAction?: ProfileAction;
+        stabilizationIntentLogged?: boolean;
+        priceDeviationPercent?: number;
+        rotation?: RotationMetadata;
     };
 }
 export interface WebhookPayload {
@@ -89,6 +132,8 @@ export interface Settlement {
     riskReport?: RiskReport;
     txHash?: string;
     explorerUrl?: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
     createdAt: number;
     updatedAt: number;
 }
@@ -163,6 +208,8 @@ export interface SettlementRow {
     risk_report: string | null;
     tx_hash: string | null;
     explorer_url: string | null;
+    keeper_execution_hash?: string | null;
+    keeper_audit_url?: string | null;
     created_at: number;
     updated_at: number;
 }
@@ -183,6 +230,8 @@ export interface SettlementResponse {
     execution?: {
         txHash: string;
         explorerUrl: string;
+        keeperExecutionHash?: string;
+        keeperAuditUrl?: string;
     };
     createdAt: number;
     updatedAt: number;

@@ -66,15 +66,52 @@ export function initDatabase() {
       enabled INTEGER NOT NULL DEFAULT 1,
       updated_at INTEGER NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS telegram_profiles (
+      chat_id TEXT PRIMARY KEY,
+      profile TEXT NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
   `);
+    migrateSettlementsColumns(db);
     console.log("[DB] Database initialized at", DB_PATH);
     return db;
+}
+function migrateSettlementsColumns(database) {
+    const cols = database
+        .prepare(`PRAGMA table_info(settlements)`)
+        .all();
+    const names = new Set(cols.map((c) => c.name));
+    if (!names.has("keeper_execution_hash")) {
+        database.exec(`ALTER TABLE settlements ADD COLUMN keeper_execution_hash TEXT`);
+    }
+    if (!names.has("keeper_audit_url")) {
+        database.exec(`ALTER TABLE settlements ADD COLUMN keeper_audit_url TEXT`);
+    }
 }
 export function getDatabase() {
     if (!db) {
         return initDatabase();
     }
     return db;
+}
+/** Next settlement ID in id-index format (e.g. stl-0, stl-1). */
+export function getNextSettlementId() {
+    const db = getDatabase();
+    const stmt = db.prepare(`
+    SELECT id FROM settlements WHERE id LIKE 'stl-%'
+  `);
+    const rows = stmt.all();
+    let maxIndex = -1;
+    for (const row of rows) {
+        const match = row.id.match(/^stl-(\d+)$/);
+        if (match) {
+            const n = parseInt(match[1], 10);
+            if (n > maxIndex)
+                maxIndex = n;
+        }
+    }
+    return `stl-${maxIndex + 1}`;
 }
 export function createSettlement(id, intent) {
     const db = getDatabase();
@@ -127,7 +164,7 @@ export function getSettlementByRecipeId(recipeId) {
     }
     return rowToSettlement(row);
 }
-export function updateSettlementStatus(id, status, riskReport, txHash, explorerUrl) {
+export function updateSettlementStatus(id, status, riskReport, txHash, explorerUrl, keeperExecutionHash, keeperAuditUrl) {
     const db = getDatabase();
     const now = Date.now();
     const stmt = db.prepare(`
@@ -136,10 +173,12 @@ export function updateSettlementStatus(id, status, riskReport, txHash, explorerU
         risk_report = COALESCE(?, risk_report),
         tx_hash = COALESCE(?, tx_hash),
         explorer_url = COALESCE(?, explorer_url),
+        keeper_execution_hash = COALESCE(?, keeper_execution_hash),
+        keeper_audit_url = COALESCE(?, keeper_audit_url),
         updated_at = ?
     WHERE id = ?
   `);
-    stmt.run(status, riskReport ? JSON.stringify(riskReport) : null, txHash ?? null, explorerUrl ?? null, now, id);
+    stmt.run(status, riskReport ? JSON.stringify(riskReport) : null, txHash ?? null, explorerUrl ?? null, keeperExecutionHash ?? null, keeperAuditUrl ?? null, now, id);
     return getSettlement(id);
 }
 export function getAllSettlements(limit = 100) {
@@ -217,9 +256,26 @@ export function addToPositionOrCreate(params) {
     const db = getDatabase();
     const now = Date.now();
     const normalizedPool = poolAddress.toLowerCase();
-    const existing = getPositionByPoolAddress(normalizedPool, chain);
+    // Prefer matching by pool+chain, but gracefully fall back to pool-only so
+    // multiple simulations to the same pool aggregate into a single position
+    // even if the chain identifier changes slightly.
+    const existing = getPositionByPoolAddress(normalizedPool, chain) ??
+        getPositionByPoolAddress(normalizedPool);
     if (existing) {
-        const newAmount = (BigInt(existing.depositAmount) + BigInt(amount)).toString();
+        let newAmount;
+        try {
+            newAmount = (BigInt(existing.depositAmount) + BigInt(amount)).toString();
+        }
+        catch (err) {
+            console.error("[DB] Failed to aggregate deposit amount for existing position", {
+                positionId: existing.positionId,
+                existingAmount: existing.depositAmount,
+                incomingAmount: amount,
+                error: err instanceof Error ? err.message : String(err),
+            });
+            // Fallback: keep existing amount unchanged to avoid corrupting data
+            return existing;
+        }
         const updateStmt = db.prepare(`
       UPDATE positions
       SET deposit_amount = ?, updated_at = ?
@@ -394,6 +450,39 @@ export function getEnabledTelegramChatIds() {
     const rows = stmt.all();
     return rows.map((r) => r.chat_id);
 }
+const VALID_PROFILES = [
+    "conservative",
+    "balanced",
+    "backstop",
+];
+export function setTelegramProfile(chatId, profile) {
+    const db = getDatabase();
+    const now = Date.now();
+    const stmt = db.prepare(`
+    INSERT INTO telegram_profiles (chat_id, profile, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(chat_id) DO UPDATE SET
+      profile = excluded.profile,
+      updated_at = excluded.updated_at
+  `);
+    stmt.run(chatId, profile, now);
+    return { chatId, profile, updatedAt: now };
+}
+export function getTelegramProfileRecord(chatId) {
+    const db = getDatabase();
+    const row = db
+        .prepare(`SELECT chat_id, profile, updated_at FROM telegram_profiles WHERE chat_id = ?`)
+        .get(chatId);
+    if (!row)
+        return null;
+    const p = row.profile;
+    if (!VALID_PROFILES.includes(p))
+        return null;
+    return { chatId: row.chat_id, profile: p, updatedAt: row.updated_at };
+}
+export function getEffectiveTelegramProfile(chatId) {
+    return getTelegramProfileRecord(chatId)?.profile ?? "balanced";
+}
 function rowToSettlement(row) {
     return {
         id: row.id,
@@ -402,6 +491,8 @@ function rowToSettlement(row) {
         riskReport: row.risk_report ? JSON.parse(row.risk_report) : undefined,
         txHash: row.tx_hash ?? undefined,
         explorerUrl: row.explorer_url ?? undefined,
+        keeperExecutionHash: row.keeper_execution_hash ?? undefined,
+        keeperAuditUrl: row.keeper_audit_url ?? undefined,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
     };
