@@ -21,7 +21,7 @@ const testIntent = {
   maxSlippageTolerance: 0.01,
   maxBridgeDelay: 1200000,
   sourceRpc: "https://virtual.base-sepolia.eu.rpc.tenderly.co/eda241e6-2aa8-4abe-9db9-784bd0ceb88d",
-  targetRpc: "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668"
+  targetRpc: "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736"
 };
 
 async function sleep(ms: number): Promise<void> {

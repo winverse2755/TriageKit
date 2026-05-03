@@ -37,7 +37,7 @@ const {
 } = process.env as Record<string, string>;
 
 const unichainSepolia = {
-    id: 1301,
+    id: 9991301,
     name: 'Unichain Sepolia',
     network: 'unichain-sepolia',
     nativeCurrency: { name: 'ETH', symbol: 'ETH', decimals: 18 },

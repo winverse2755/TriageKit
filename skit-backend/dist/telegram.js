@@ -1,3 +1,30 @@
+const USDC_DECIMALS = 6;
+/** Normalize chain name to backend format (e.g. baseSepolia, unichainSepolia). */
+function normalizeChain(name) {
+    const s = name.toLowerCase().replace(/\s+/g, "");
+    if (s.includes("base") && s.includes("sepolia"))
+        return "baseSepolia";
+    if ((s.includes("unichain") || s.includes("astrochain")) && s.includes("sepolia"))
+        return "unichainSepolia";
+    return name.trim();
+}
+/**
+ * Parse intent-based message like "send 5 USDC from baseSepolia to unichainSepolia".
+ * Returns [amountRaw, fromChain, toChain] for onSimulate, or null if not matched.
+ */
+export function parseIntentMessage(text) {
+    const trimmed = text.trim();
+    // send <amount> USDC from <source> to <target>
+    const match = trimmed.match(/^send\s+([\d.]+)\s+(USDC|usdc)\s+from\s+(.+?)\s+to\s+(.+)$/i);
+    if (!match)
+        return null;
+    const [, amountStr, , fromChain, toChain] = match;
+    const amount = parseFloat(amountStr);
+    if (Number.isNaN(amount) || amount <= 0)
+        return null;
+    const amountRaw = Math.floor(amount * 10 ** USDC_DECIMALS).toString();
+    return [amountRaw, normalizeChain(fromChain), normalizeChain(toChain)];
+}
 export class TelegramBotService {
     token;
     apiBase;
@@ -64,6 +91,12 @@ export class TelegramBotService {
         const args = parts.slice(1);
         const chatIdStr = String(chatId);
         try {
+            // Intent-based: "send 5 USDC from baseSepolia to unichainSepolia"
+            const intentArgs = !command.startsWith("/") ? parseIntentMessage(text) : null;
+            if (intentArgs) {
+                await this.sendMessage(chatIdStr, await this.handlers.onSimulate(chatIdStr, intentArgs));
+                return;
+            }
             switch (command) {
                 case "/simulate":
                     await this.sendMessage(chatIdStr, await this.handlers.onSimulate(chatIdStr, args));
@@ -73,6 +106,9 @@ export class TelegramBotService {
                     break;
                 case "/alerts":
                     await this.sendMessage(chatIdStr, await this.handlers.onAlerts(chatIdStr, args));
+                    break;
+                case "/profile":
+                    await this.sendMessage(chatIdStr, await this.handlers.onProfile(chatIdStr, args));
                     break;
                 case "/approve":
                     await this.sendMessage(chatIdStr, await this.handlers.onApprove(args));
@@ -95,7 +131,7 @@ export class TelegramBotService {
                     await this.sendMessage(chatIdStr, await this.handlers.onRebalance(args));
                     break;
                 default:
-                    await this.sendMessage(chatIdStr, "Unknown command. Supported: /simulate /status /alerts /approve /history /fork status /positions /rebalance");
+                    await this.sendMessage(chatIdStr, "Unknown command. Try: send 5 USDC from baseSepolia to unichainSepolia — or /simulate /status /alerts /profile /approve /history /fork status /positions /rebalance");
             }
         }
         catch (error) {
@@ -110,7 +146,8 @@ export function formatHistory(settlements) {
         const statusIcon = s.status === "EXECUTED" ? "✅" : s.status === "FAILED" ? "❌" : "⏳";
         const riskLink = s.riskReport?.explorerUrl ?? "n/a";
         const txLink = s.explorerUrl ?? "n/a";
-        return `${i + 1}. ${statusIcon} ${s.id}\nstatus=${s.status}\nrisk=${riskLink}\nsettlementTx=${txLink}`;
+        const kh = s.keeperExecutionHash ?? "n/a";
+        return `${i + 1}. ${statusIcon} ${s.id}\nstatus=${s.status}\nrisk=${riskLink}\nsettlementTx=${txLink}\nkeeperHub=${kh}`;
     });
     return `Last settlements:\n\n${lines.join("\n\n")}`;
 }
@@ -128,7 +165,7 @@ export function formatPositions(positions) {
     });
     return `Active positions:\n\n${lines.join("\n\n")}`;
 }
-export function formatSettlementExecuted(report, txHash, explorerUrl) {
+export function formatSettlementExecuted(report, txHash, explorerUrl, keeperExecutionHash, keeperAuditUrl) {
     const slippageCheck = report.checks.find((c) => c.name === "slippage");
     const liquidityCheck = report.checks.find((c) => c.name === "liquidity");
     const bridgeCheck = report.checks.find((c) => c.name === "bridgeDelay");
@@ -140,7 +177,20 @@ export function formatSettlementExecuted(report, txHash, explorerUrl) {
         `bridgeETA(ms)=${bridgeCheck?.actual ?? "n/a"}`,
         `gas=${report.tenderlySim?.gasEstimate ?? "n/a"}`,
         `tx=${explorerUrl ?? txHash ?? "n/a"}`,
-    ].join("\n");
+        `keeperHub=${keeperExecutionHash ?? "n/a"}`,
+        report.metadata?.rotation
+            ? `rotation=${report.metadata.rotation.executionStatus}`
+            : "",
+        report.metadata?.rotation
+            ? `partialExit=${report.metadata.rotation.partialExitAmount}`
+            : "",
+        report.metadata?.rotation?.quote?.route?.length
+            ? `swapRoute=${report.metadata.rotation.quote.route.join(" -> ")}`
+            : "",
+        keeperAuditUrl ? `keeperAudit=${keeperAuditUrl}` : "",
+    ]
+        .filter(Boolean)
+        .join("\n");
 }
 export function formatSettlementFailed(report, error) {
     return [

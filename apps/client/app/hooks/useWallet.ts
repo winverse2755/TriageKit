@@ -61,7 +61,7 @@ export const SUPPORTED_CHAINS: SupportedChain[] = [
     { chainIdHex: '0x14a34', chainId: 84532, name: 'Base Sepolia' },
     { chainIdHex: '0x38', chainId: 56, name: 'BNB Chain' },
     { chainIdHex: '0xa4ec', chainId: 42220, name: 'Celo Mainnet' },
-    { chainIdHex: '0x515', chainId: 1301, name: 'Unichain Sepolia' },
+    { chainIdHex: '0x515', chainId: 9991301, name: 'Unichain Sepolia' },
 ];
 
 const CHAIN_RPC_URLS: Record<string, string> = {

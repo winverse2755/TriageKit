@@ -83,7 +83,7 @@ const BASE_VNET_RPC =
   "https://virtual.base-sepolia.eu.rpc.tenderly.co/eda241e6-2aa8-4abe-9db9-784bd0ceb88d";
 const UNICHAIN_VNET_RPC =
   process.env.UNICHAIN_VNET_RPC ??
-  "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668";
+  "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736";
 
 const VALID_AGENT_PROFILES: AgentProfile[] = [
   "conservative",

@@ -31,13 +31,13 @@ export const arcTestnet: Chain = defineChain({
 });
 
 export const unichainSepolia: Chain = defineChain({
-  id: 1301,
+  id: 9991301,
   name: "Unichain Sepolia",
   network: "unichain-sepolia",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: {
-    default: { http: ["https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668"] },
-    public: { http: ["https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668"] },
+    default: { http: ["https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736"] },
+    public: { http: ["https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736"] },
   },
   blockExplorers: {
     default: { name: "UniSepoliaTest", url: "https://dashboard.tenderly.co/explorer/vnet/cf254021-0a4e-427f-b35e-907c08cfc532/transactions" },

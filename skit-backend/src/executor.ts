@@ -30,14 +30,14 @@ import { quoteUniswapRotation } from "./uniswap-client.js";
 
 // Unichain Sepolia Tenderly VNet configuration
 const UNICHAIN_VNET = {
-  id: 1301,
+  id: 9991301,
   name: "Unichain Sepolia VNet",
   network: "unichain-sepolia-vnet",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: {
     default: {
       http: [
-        "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668",
+        "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736",
       ],
     },
   },

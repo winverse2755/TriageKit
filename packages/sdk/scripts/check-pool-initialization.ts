@@ -97,7 +97,7 @@ async function main() {
     try {
         const poolManagerAddress = getPoolManagerAddress('unichainSepolia');
         console.log(`Pool Manager: ${poolManagerAddress}`);
-        console.log('Chain: Unichain Sepolia (1301)');
+        console.log('Chain: Unichain Sepolia (9991301)');
         console.log(`  Registry pools: ${POOL_REGISTRY.length}`);
         console.log('');
 

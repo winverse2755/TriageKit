@@ -2,19 +2,29 @@
  * Settlement executor - wraps UniswapLiquidityExecutor for approved settlements
  */
 import { type Address } from "viem";
-import type { RebalanceRequest, RiskReport } from "./types.js";
+import type { RebalanceRequest, RiskReport, RotationMetadata } from "./types.js";
 export interface ExecutionResult {
     success: boolean;
     txHash?: string;
     explorerUrl?: string;
+    keeperExecutionHash?: string;
+    keeperAuditUrl?: string;
     error?: string;
+}
+export interface RotationExecutionResult extends ExecutionResult {
+    rotation?: RotationMetadata;
 }
 export declare class SettlementExecutor {
     private publicClient;
     private walletClient;
     private account;
+    private explorerForTx;
+    /** Encode + route contract writes through KeeperHub when configured. */
+    private relayEncodedCall;
+    private relaySendTransaction;
     constructor(privateKey?: `0x${string}`);
     executeSettlement(report: RiskReport): Promise<ExecutionResult>;
+    executeCollateralRotation(report: RiskReport): Promise<RotationExecutionResult>;
     executeRebalance(request: RebalanceRequest): Promise<ExecutionResult>;
     /**
      * Find the tokenId of an existing position minted to this account.

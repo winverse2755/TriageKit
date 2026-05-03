@@ -3,8 +3,9 @@
  *
  * Tests the full flow:
  * 1. POST /trigger - Create a settlement
- * 2. POST /webhook - Simulate CRE risk report (APPROVED)
- * 3. GET /settlement/:id - Verify execution and get explorer URL
+ * 2. POST /webhook - Simulate anomaly-driven WARNING report
+ * 3. Backend rotates collateral through KeeperHub + updates settlement
+ * 4. GET /settlement/:id - Verify rotation output is visible
  */
 import "dotenv/config";
 const BACKEND_URL = process.env.BACKEND_URL || "https://seedier-reese-nomographic.ngrok-free.dev";
@@ -14,11 +15,10 @@ const testIntent = {
     targetChain: "unichainSepolia",
     token: "USDC",
     amount: "1000000", // 1 USDC (6 decimals)
-    // targetPoolAddress: "0x00b036b58a818b1bc34d502d3fe730db729e62ac",
     maxSlippageTolerance: 0.01,
     maxBridgeDelay: 1200000,
     sourceRpc: "https://virtual.base-sepolia.eu.rpc.tenderly.co/eda241e6-2aa8-4abe-9db9-784bd0ceb88d",
-    targetRpc: "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668"
+    targetRpc: "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736"
 };
 async function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -66,10 +66,10 @@ async function testTriggerEndpoint() {
     }
 }
 async function testWebhookEndpoint(settlementId) {
-    console.log("\n=== Testing POST /webhook endpoint (APPROVED) ===");
-    // Create a mock APPROVED risk report
+    console.log("\n=== Testing POST /webhook endpoint (WARNING + rotateCollateral) ===");
+    // Create a mock WARNING risk report that should trigger collateral rotation.
     const mockReport = {
-        status: "APPROVED",
+        status: "WARNING",
         checks: [
             {
                 name: "slippage",
@@ -97,11 +97,11 @@ async function testWebhookEndpoint(settlementId) {
             },
             {
                 name: "priceDeviation",
-                passed: true,
-                actual: "0.1%",
-                threshold: "1%",
-                severity: "critical",
-                description: "Price deviation within acceptable range"
+                passed: false,
+                actual: 6.2,
+                threshold: "pass<=5% / rotate 5-10% / exit>10%",
+                severity: "warning",
+                description: "Balanced profile rotate band triggered"
             }
         ],
         oracleData: {
@@ -120,7 +120,10 @@ async function testWebhookEndpoint(settlementId) {
         intent: testIntent,
         metadata: {
             executionId: `exec-${Date.now()}`,
-            notes: ["E2E test simulation"]
+            notes: ["E2E warning rotation simulation"],
+            agentProfile: "balanced",
+            profileAction: "PARTIAL_ROTATE_HOLD",
+            priceDeviationPercent: 6.2
         }
     };
     const webhookPayload = {
@@ -129,7 +132,7 @@ async function testWebhookEndpoint(settlementId) {
         sentAt: Date.now()
     };
     try {
-        console.log("Sending webhook with APPROVED status...");
+        console.log("Sending webhook with WARNING status (rotation path)...");
         const response = await fetch(`${BACKEND_URL}/webhook`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -205,12 +208,14 @@ async function runE2ETest() {
     }
     // 3. Check initial settlement status
     await testGetSettlement(settlementId);
-    // 4. Simulate CRE webhook with APPROVED status
+    console.log("\nFlow target:");
+    console.log("profile set -> anomaly triggered -> WARNING fired -> rotation executed -> Risk Explorer updated -> Telegram alerted");
+    // 4. Simulate CRE webhook with WARNING status and balanced rotate action
     const webhookSuccess = await testWebhookEndpoint(settlementId);
     if (!webhookSuccess) {
         console.error("\nWebhook processing failed");
     }
-    // 5. Wait a moment for execution to complete
+    // 5. Wait a moment for rotation execution to complete
     console.log("\nWaiting for execution to complete...");
     await sleep(3000);
     // 6. Check final settlement status

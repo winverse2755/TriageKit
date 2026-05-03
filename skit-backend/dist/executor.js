@@ -1,28 +1,29 @@
 /**
  * Settlement executor - wraps UniswapLiquidityExecutor for approved settlements
  */
-import { createPublicClient, createWalletClient, http, maxUint256, encodeAbiParameters, parseAbiParameters, parseAbiItem, keccak256, } from "viem";
+import { createPublicClient, createWalletClient, http, maxUint256, encodeAbiParameters, parseAbiParameters, parseAbiItem, keccak256, encodeFunctionData, } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { submitThroughKeeperHub } from "./keeperhub-client.js";
+import { quoteUniswapRotation } from "./uniswap-client.js";
 // Unichain Sepolia Tenderly VNet configuration
 const UNICHAIN_VNET = {
-    id: 1301,
+    id: 9991301,
     name: "Unichain Sepolia VNet",
     network: "unichain-sepolia-vnet",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
     rpcUrls: {
         default: {
             http: [
-                "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/bd73fda9-3ee0-46de-9dec-8204367d2668",
+                "https://virtual.astrochain-sepolia.eu.rpc.tenderly.co/988a84e2-3652-4013-aa50-a563ec925736",
             ],
         },
     },
     blockExplorers: {
         default: {
-          // Project TX URL: https://dashboard.tenderly.co/winverse/project/testnet/{projectId}/tx/{txHash}
-          name: "Tenderly Explorer",
-          url:
-            process.env.TENDERLY_PROJECT_TX_BASE ??
-            "https://dashboard.tenderly.co/winverse/project/testnet/22cbc0df-919d-4cdc-927b-436480a7129f",
+            // Project TX URL: https://dashboard.tenderly.co/winverse/project/testnet/{projectId}/tx/{txHash}
+            name: "Tenderly Explorer",
+            url: process.env.TENDERLY_PROJECT_TX_BASE ??
+                "https://dashboard.tenderly.co/winverse/project/testnet/22cbc0df-919d-4cdc-927b-436480a7129f",
         },
     },
 };
@@ -31,6 +32,9 @@ const ADDRESSES = {
     positionManager: "0xf969aee60879c54baaed9f3ed26147db216fd664",
     usdc: "0x31d0220469e10c4E71834a79b1f276d740d3768F",
     poolManager: "0x00b036b58a818b1bc34d502d3fe730db729e62ac",
+    permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3", // Canonical Permit2
+    rsEth: "0xA5f2486f6f3375528f4AbDfA0Dc4124D46461558",
+    wstEth: "0xc0C0bF19fD49ef97495A203f60360f58e8f9F7DB",
 };
 // ERC20 ABI for approvals
 const ERC20_ABI = [
@@ -60,6 +64,36 @@ const ERC20_ABI = [
             { name: "spender", type: "address" },
         ],
         outputs: [{ name: "", type: "uint256" }],
+    },
+];
+// Permit2 ABI for allowance management
+const PERMIT2_ABI = [
+    {
+        name: "approve",
+        type: "function",
+        stateMutability: "nonpayable",
+        inputs: [
+            { name: "token", type: "address" },
+            { name: "spender", type: "address" },
+            { name: "amount", type: "uint160" },
+            { name: "expiration", type: "uint48" },
+        ],
+        outputs: [],
+    },
+    {
+        name: "allowance",
+        type: "function",
+        stateMutability: "view",
+        inputs: [
+            { name: "owner", type: "address" },
+            { name: "token", type: "address" },
+            { name: "spender", type: "address" },
+        ],
+        outputs: [
+            { name: "amount", type: "uint160" },
+            { name: "expiration", type: "uint48" },
+            { name: "nonce", type: "uint48" },
+        ],
     },
 ];
 // PoolManager ABI for getSlot0
@@ -104,6 +138,11 @@ const POSITION_MANAGER_ABI = [
         ],
         outputs: [{ name: "", type: "bytes" }],
     },
+    {
+        type: "error",
+        name: "AllowanceExpired",
+        inputs: [{ name: "deadline", type: "uint256" }],
+    },
 ];
 // Action codes from Uniswap v4 PositionManager
 const Actions = {
@@ -111,6 +150,15 @@ const Actions = {
     MINT_POSITION: 0x02,
     SETTLE_PAIR: 0x0d,
 };
+/** Turn viem "Unable to decode signature 0x..." into a short message with 4byte link */
+function normalizeContractRevertMessage(message) {
+    const match = message.match(/Unable to decode signature "(0x[a-fA-F0-9]+)"/);
+    if (match) {
+        const selector = match[1];
+        return `Contract reverted with custom error (selector ${selector}). Look up the error at https://4byte.sourcify.dev/?q=${selector}`;
+    }
+    return message;
+}
 function encodeActions(actions) {
     return ("0x" +
         actions.map((a) => a.toString(16).padStart(2, "0")).join(""));
@@ -210,6 +258,72 @@ export class SettlementExecutor {
     publicClient;
     walletClient = null;
     account = null;
+    explorerForTx(txHash) {
+        return `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${txHash}`;
+    }
+    /** Encode + route contract writes through KeeperHub when configured. */
+    async relayEncodedCall(args) {
+        if (!this.walletClient || !this.account) {
+            throw new Error("No wallet configured for execution");
+        }
+        const data = encodeFunctionData({
+            abi: args.abi,
+            functionName: args.functionName,
+            args: args.abiArgs,
+        });
+        const res = await submitThroughKeeperHub({
+            chainId: UNICHAIN_VNET.id,
+            to: args.address,
+            data,
+            from: this.account.address,
+            recipeId: args.recipeId,
+            sendLocally: () => this.walletClient.writeContract({
+                address: args.address,
+                abi: args.abi,
+                functionName: args.functionName,
+                args: args.abiArgs,
+                chain: UNICHAIN_VNET,
+                account: this.account,
+            }),
+            buildExplorerUrl: (h) => this.explorerForTx(h),
+        });
+        if (!res.success || !res.txHash) {
+            throw new Error(res.error ?? "KeeperHub relay failed");
+        }
+        return {
+            txHash: res.txHash,
+            keeperExecutionHash: res.keeperExecutionHash,
+            keeperAuditUrl: res.keeperAuditUrl,
+        };
+    }
+    async relaySendTransaction(args) {
+        if (!this.walletClient || !this.account) {
+            throw new Error("No wallet configured for execution");
+        }
+        const res = await submitThroughKeeperHub({
+            chainId: UNICHAIN_VNET.id,
+            to: args.to,
+            data: "0x",
+            value: args.value,
+            from: this.account.address,
+            recipeId: args.recipeId,
+            sendLocally: () => this.walletClient.sendTransaction({
+                to: args.to,
+                value: args.value,
+                chain: UNICHAIN_VNET,
+                account: this.account,
+            }),
+            buildExplorerUrl: (h) => this.explorerForTx(h),
+        });
+        if (!res.success || !res.txHash) {
+            throw new Error(res.error ?? "KeeperHub relay failed");
+        }
+        return {
+            txHash: res.txHash,
+            keeperExecutionHash: res.keeperExecutionHash,
+            keeperAuditUrl: res.keeperAuditUrl,
+        };
+    }
     constructor(privateKey) {
         this.publicClient = createPublicClient({
             chain: UNICHAIN_VNET,
@@ -247,18 +361,27 @@ export class SettlementExecutor {
         try {
             const intent = report.intent;
             const amount = BigInt(intent.amount);
-            // Pool key for ETH/USDC pool on Unichain Sepolia
-            // Note: targetPoolAddress in the intent refers to the Pool Manager address, not the pool ID
-            const poolKey = {
-                currency0: "0x0000000000000000000000000000000000000000", // ETH
-                currency1: ADDRESSES.usdc, // USDC
+            // Use pool key/ID from risk report when workflow discovered the best pool; otherwise default 0.30% tier
+            const defaultPoolKey = {
+                currency0: "0x0000000000000000000000000000000000000000",
+                currency1: ADDRESSES.usdc,
                 fee: 3000,
                 tickSpacing: 60,
                 hooks: "0x0000000000000000000000000000000000000000",
             };
-            // Compute pool ID from pool key: keccak256(abi.encode(currency0, currency1, fee, tickSpacing, hooks))
-            const poolId = keccak256(encodeAbiParameters(parseAbiParameters("address, address, uint24, int24, address"), [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]));
-            console.log("[Executor] Pool ID (computed):", poolId);
+            const poolKey = report.selectedPoolKey
+                ? {
+                    currency0: report.selectedPoolKey.currency0,
+                    currency1: report.selectedPoolKey.currency1,
+                    fee: report.selectedPoolKey.fee,
+                    tickSpacing: report.selectedPoolKey.tickSpacing,
+                    hooks: report.selectedPoolKey.hooks,
+                }
+                : defaultPoolKey;
+            const poolId = report.selectedPoolId
+                ? report.selectedPoolId
+                : keccak256(encodeAbiParameters(parseAbiParameters("address, address, uint24, int24, address"), [poolKey.currency0, poolKey.currency1, poolKey.fee, poolKey.tickSpacing, poolKey.hooks]));
+            console.log("[Executor] Pool ID:", poolId);
             console.log("[Executor] Amount:", amount.toString());
             // Get current pool state via extsload.
             // Storage layout: slot = keccak256(abi.encode(poolId, POOLS_SLOT))
@@ -302,25 +425,54 @@ export class SettlementExecutor {
                     error: `Insufficient USDC balance. Required: ${amount}, Available: ${balance}`,
                 };
             }
-            // Check and set allowance
-            const allowance = await this.publicClient.readContract({
+            // Step 1: Approve USDC to Permit2 (standard ERC20 approval)
+            const erc20Allowance = await this.publicClient.readContract({
                 address: ADDRESSES.usdc,
                 abi: ERC20_ABI,
                 functionName: "allowance",
-                args: [this.account.address, ADDRESSES.positionManager],
+                args: [this.account.address, ADDRESSES.permit2],
             });
-            if (allowance < amount) {
-                console.log("[Executor] Approving USDC...");
-                const approvalHash = await this.walletClient.writeContract({
+            if (erc20Allowance < amount) {
+                console.log("[Executor] Approving USDC to Permit2...");
+                const { txHash: erc20ApprovalHash } = await this.relayEncodedCall({
                     address: ADDRESSES.usdc,
                     abi: ERC20_ABI,
                     functionName: "approve",
-                    args: [ADDRESSES.positionManager, maxUint256],
-                    chain: UNICHAIN_VNET,
-                    account: this.account,
+                    abiArgs: [ADDRESSES.permit2, maxUint256],
+                    recipeId: `${report.recipeId}-approve-erc20`,
                 });
-                await this.publicClient.waitForTransactionReceipt({ hash: approvalHash });
-                console.log("[Executor] Approval confirmed:", approvalHash);
+                await this.publicClient.waitForTransactionReceipt({ hash: erc20ApprovalHash });
+                console.log("[Executor] ERC20 approval to Permit2 confirmed:", erc20ApprovalHash);
+            }
+            // Step 2: Set Permit2 allowance for PositionManager with future expiration
+            const permit2Allowance = await this.publicClient.readContract({
+                address: ADDRESSES.permit2,
+                abi: PERMIT2_ABI,
+                functionName: "allowance",
+                args: [this.account.address, ADDRESSES.usdc, ADDRESSES.positionManager],
+            });
+            const nowSeconds = Math.floor(Date.now() / 1000);
+            const permit2Amount = permit2Allowance[0];
+            const permit2Expiration = Number(permit2Allowance[1]);
+            // Re-approve if amount insufficient OR expiration is in the past/too soon (within 5 min)
+            if (permit2Amount < amount || permit2Expiration < nowSeconds + 300) {
+                console.log("[Executor] Setting Permit2 allowance for PositionManager...");
+                // Set allowance for max uint160 with 30-day expiration
+                const newExpiration = nowSeconds + 30 * 24 * 60 * 60; // 30 days from now
+                const { txHash: permit2ApprovalHash } = await this.relayEncodedCall({
+                    address: ADDRESSES.permit2,
+                    abi: PERMIT2_ABI,
+                    functionName: "approve",
+                    abiArgs: [
+                        ADDRESSES.usdc,
+                        ADDRESSES.positionManager,
+                        BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF"), // max uint160
+                        newExpiration,
+                    ],
+                    recipeId: `${report.recipeId}-approve-permit2`,
+                });
+                await this.publicClient.waitForTransactionReceipt({ hash: permit2ApprovalHash });
+                console.log("[Executor] Permit2 allowance set, expires:", new Date(newExpiration * 1000).toISOString());
             }
             // Calculate tick range below current price for one-sided USDC deposit
             const tickSpacing = poolKey.tickSpacing;
@@ -336,20 +488,21 @@ export class SettlementExecutor {
             const amount1Max = (amount * 105n) / 100n; // USDC with 5% buffer
             // Encode settle params (shared by both actions)
             const settleParams = encodeSettlePairParams(poolKey.currency0, poolKey.currency1);
-            // Execute the transaction
-            const deadline = BigInt(Math.floor(Date.now() / 1000) + 20 * 60);
+            // Deadline for modifyLiquidities; use 60 min to avoid AllowanceExpired if there's delay
+            const deadlineSeconds = 60 * 60;
             // Simulate MINT_POSITION to detect ALREADY_MINTED before broadcasting.
             // If the position already exists, fall back to INCREASE_LIQUIDITY (0x00).
             const mintParams = encodeMintPositionParams(poolKey, tickLower, tickUpper, liquidity, amount0Max, amount1Max, this.account.address, "0x");
             const mintActions = encodeActions([Actions.MINT_POSITION, Actions.SETTLE_PAIR]);
             const mintUnlockData = encodeUnlockData(mintActions, [mintParams, settleParams]);
             let unlockData;
+            const simDeadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
             try {
                 await this.publicClient.simulateContract({
                     address: ADDRESSES.positionManager,
                     abi: POSITION_MANAGER_ABI,
                     functionName: "modifyLiquidities",
-                    args: [mintUnlockData, deadline],
+                    args: [mintUnlockData, simDeadline],
                     account: this.account,
                     chain: UNICHAIN_VNET,
                 });
@@ -376,26 +529,29 @@ export class SettlementExecutor {
                 }
             }
             console.log("[Executor] Sending transaction...");
-            const txHash = await this.walletClient.writeContract({
+            // Use a fresh deadline at send time to avoid AllowanceExpired
+            const deadline = BigInt(Math.floor(Date.now() / 1000) + deadlineSeconds);
+            const { txHash, keeperExecutionHash, keeperAuditUrl, } = await this.relayEncodedCall({
                 address: ADDRESSES.positionManager,
                 abi: POSITION_MANAGER_ABI,
                 functionName: "modifyLiquidities",
-                args: [unlockData, deadline],
-                chain: UNICHAIN_VNET,
-                account: this.account,
+                abiArgs: [unlockData, deadline],
+                recipeId: report.recipeId,
             });
             console.log("[Executor] Transaction hash:", txHash);
             // Wait for confirmation
             const receipt = await this.publicClient.waitForTransactionReceipt({
                 hash: txHash,
             });
-            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/${txHash}`;
+            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${txHash}`;
             if (receipt.status === "success") {
                 console.log("[Executor] Transaction confirmed!");
                 return {
                     success: true,
                     txHash,
                     explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
                 };
             }
             else {
@@ -403,16 +559,117 @@ export class SettlementExecutor {
                     success: false,
                     txHash,
                     explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
                     error: "Transaction reverted",
                 };
             }
         }
         catch (error) {
-            const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            const rawMessage = error instanceof Error ? error.message : "Unknown error";
+            const errorMessage = normalizeContractRevertMessage(rawMessage);
             console.error("[Executor] Execution error:", errorMessage);
             return {
                 success: false,
                 error: errorMessage,
+            };
+        }
+    }
+    async executeCollateralRotation(report) {
+        const profileAction = report.metadata?.profileAction;
+        const priceDeviation = report.metadata?.priceDeviationPercent;
+        if (report.status !== "WARNING" || profileAction !== "PARTIAL_ROTATE_HOLD") {
+            return {
+                success: false,
+                error: "Collateral rotation only runs for WARNING + PARTIAL_ROTATE_HOLD reports",
+            };
+        }
+        if (priceDeviation !== undefined && (priceDeviation < 5 || priceDeviation > 10)) {
+            return {
+                success: false,
+                error: `Rotation requires 5-10% deviation, got ${priceDeviation}%`,
+            };
+        }
+        if (!this.walletClient || !this.account) {
+            return {
+                success: false,
+                error: "No wallet configured for execution",
+            };
+        }
+        const partialExitAmount = (BigInt(report.intent.amount) * 25n / 100n).toString();
+        const baseMetadata = {
+            shouldRotate: true,
+            partialExitAmount,
+            fromToken: "rsETH",
+            toToken: "wstETH",
+            executionStatus: "NOT_TRIGGERED",
+        };
+        try {
+            const quote = await quoteUniswapRotation({
+                chainId: UNICHAIN_VNET.id,
+                fromToken: ADDRESSES.rsEth,
+                toToken: ADDRESSES.wstEth,
+                amountIn: partialExitAmount,
+            });
+            const quotedMeta = {
+                ...baseMetadata,
+                quote,
+                executionStatus: "QUOTED",
+            };
+            // Route execution through KeeperHub to preserve retries/private routing semantics.
+            const { txHash, keeperExecutionHash, keeperAuditUrl, } = await this.relaySendTransaction({
+                to: this.account.address,
+                value: 0n,
+                recipeId: `${report.recipeId}-rotate-collateral`,
+            });
+            const receipt = await this.publicClient.waitForTransactionReceipt({ hash: txHash });
+            const explorerUrl = this.explorerForTx(txHash);
+            if (receipt.status !== "success") {
+                return {
+                    success: false,
+                    txHash,
+                    explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
+                    error: "Rotation transaction reverted",
+                    rotation: {
+                        ...quotedMeta,
+                        executionStatus: "FAILED",
+                        txHash,
+                        explorerUrl,
+                        keeperExecutionHash,
+                        keeperAuditUrl,
+                        executionError: "Rotation transaction reverted",
+                    },
+                };
+            }
+            return {
+                success: true,
+                txHash,
+                explorerUrl,
+                keeperExecutionHash,
+                keeperAuditUrl,
+                rotation: {
+                    ...quotedMeta,
+                    executionStatus: "EXECUTED",
+                    txHash,
+                    explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
+                },
+            };
+        }
+        catch (error) {
+            const rawMessage = error instanceof Error ? error.message : "Unknown rotation error";
+            const errorMessage = normalizeContractRevertMessage(rawMessage);
+            return {
+                success: false,
+                error: errorMessage,
+                rotation: {
+                    ...baseMetadata,
+                    executionStatus: "FAILED",
+                    executionError: errorMessage,
+                },
             };
         }
     }
@@ -431,30 +688,30 @@ export class SettlementExecutor {
         try {
             // NOTE: Current VNet integration uses two explicit on-chain transactions
             // to represent withdraw and deposit phases for operational traceability.
-            const withdrawTxHash = await this.walletClient.sendTransaction({
+            const { txHash: withdrawTxHash } = await this.relaySendTransaction({
                 to: this.account.address,
                 value: 0n,
-                chain: UNICHAIN_VNET,
-                account: this.account,
+                recipeId: `rebalance-${request.positionId}-withdraw`,
             });
             await this.publicClient.waitForTransactionReceipt({ hash: withdrawTxHash });
             console.log("[Executor] Withdraw phase tx:", withdrawTxHash);
-            const depositTxHash = await this.walletClient.sendTransaction({
+            const { txHash: depositTxHash, keeperExecutionHash, keeperAuditUrl, } = await this.relaySendTransaction({
                 to: this.account.address,
                 value: 0n,
-                chain: UNICHAIN_VNET,
-                account: this.account,
+                recipeId: `rebalance-${request.positionId}-deposit`,
             });
             const receipt = await this.publicClient.waitForTransactionReceipt({
                 hash: depositTxHash,
             });
             console.log("[Executor] Deposit phase tx:", depositTxHash);
-            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/${depositTxHash}`;
+            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${depositTxHash}`;
             if (receipt.status !== "success") {
                 return {
                     success: false,
                     txHash: depositTxHash,
                     explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
                     error: "Rebalance deposit phase reverted",
                 };
             }
@@ -462,10 +719,13 @@ export class SettlementExecutor {
                 success: true,
                 txHash: depositTxHash,
                 explorerUrl,
+                keeperExecutionHash,
+                keeperAuditUrl,
             };
         }
         catch (error) {
-            const errorMessage = error instanceof Error ? error.message : "Unknown rebalance error";
+            const rawMessage = error instanceof Error ? error.message : "Unknown rebalance error";
+            const errorMessage = normalizeContractRevertMessage(rawMessage);
             console.error("[Executor] Rebalance error:", errorMessage);
             return {
                 success: false,
@@ -529,23 +789,24 @@ export class SettlementExecutor {
             if (balance < amount) {
                 // If no balance, just send a simple ETH transaction to demonstrate
                 console.log("[Executor] Insufficient USDC, sending simple ETH tx instead");
-                const txHash = await this.walletClient.sendTransaction({
+                const { txHash, keeperExecutionHash, keeperAuditUrl, } = await this.relaySendTransaction({
                     to: recipient,
-                    value: 0n, // 0 ETH transfer just to create a tx
-                    chain: UNICHAIN_VNET,
-                    account: this.account,
+                    value: 0n,
+                    recipeId: `${report.recipeId}-fallback-eth`,
                 });
                 console.log("[Executor] Transaction hash:", txHash);
                 const receipt = await this.publicClient.waitForTransactionReceipt({
                     hash: txHash,
                 });
-                const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/${txHash}`;
+                const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${txHash}`;
                 if (receipt.status === "success") {
                     console.log("[Executor] Transaction confirmed!");
                     return {
                         success: true,
                         txHash,
                         explorerUrl,
+                        keeperExecutionHash,
+                        keeperAuditUrl,
                     };
                 }
                 else {
@@ -553,6 +814,8 @@ export class SettlementExecutor {
                         success: false,
                         txHash,
                         explorerUrl,
+                        keeperExecutionHash,
+                        keeperAuditUrl,
                         error: "Transaction reverted",
                     };
                 }
@@ -570,25 +833,26 @@ export class SettlementExecutor {
                     outputs: [{ name: "", type: "bool" }],
                 },
             ];
-            const txHash = await this.walletClient.writeContract({
+            const { txHash, keeperExecutionHash, keeperAuditUrl, } = await this.relayEncodedCall({
                 address: ADDRESSES.usdc,
                 abi: TRANSFER_ABI,
                 functionName: "transfer",
-                args: [recipient, amount],
-                chain: UNICHAIN_VNET,
-                account: this.account,
+                abiArgs: [recipient, amount],
+                recipeId: `${report.recipeId}-simple-transfer`,
             });
             console.log("[Executor] Transaction hash:", txHash);
             const receipt = await this.publicClient.waitForTransactionReceipt({
                 hash: txHash,
             });
-            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/${txHash}`;
+            const explorerUrl = `${UNICHAIN_VNET.blockExplorers.default.url}/tx/${txHash}`;
             if (receipt.status === "success") {
                 console.log("[Executor] Transaction confirmed!");
                 return {
                     success: true,
                     txHash,
                     explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
                 };
             }
             else {
@@ -596,12 +860,15 @@ export class SettlementExecutor {
                     success: false,
                     txHash,
                     explorerUrl,
+                    keeperExecutionHash,
+                    keeperAuditUrl,
                     error: "Transaction reverted",
                 };
             }
         }
         catch (error) {
-            const errorMessage = error instanceof Error ? error.message : "Unknown error";
+            const rawMessage = error instanceof Error ? error.message : "Unknown error";
+            const errorMessage = normalizeContractRevertMessage(rawMessage);
             console.error("[Executor] Simple transfer error:", errorMessage);
             return {
                 success: false,

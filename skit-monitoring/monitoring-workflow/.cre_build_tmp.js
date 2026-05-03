@@ -8976,7 +8976,7 @@ var network172 = {
 };
 var ethereum_testnet_sepolia_soneium_1_default = network172;
 var network173 = {
-  chainId: "1301",
+  chainId: "9991301",
   chainSelector: {
     name: "ethereum-testnet-sepolia-unichain-1",
     selector: 14135854469784514356n
