@@ -3,3 +3,8 @@ node_modules
 .cursor
 .env.example
 .pnpm-store
+.DS_Store
+package-lock.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+package.json
